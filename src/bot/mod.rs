@@ -5,14 +5,15 @@
 //! `respondOK`/`respondErr`).
 
 pub mod commands;
+pub mod interactions;
 
 use crate::error::Error;
 use crate::i18n;
 use crate::mailer::Mailer;
 use crate::store::Store;
 use crate::verify::VerifyService;
-use poise::serenity_prelude::GatewayIntents;
 use poise::{BoxFuture, CreateReply, FrameworkError, FrameworkOptions};
+use serenity::all::{self as serenity, GatewayIntents};
 use std::sync::Arc;
 
 /// Shared application state, injected into every command via `ctx.data()`.
@@ -61,8 +62,14 @@ pub fn build(
     let verify = Arc::new(verify);
     poise::Framework::builder()
         .options(FrameworkOptions {
-            commands: vec![commands::help()],
+            commands: vec![
+                commands::help(),
+                commands::setup(),
+                commands::regex(),
+                commands::csv(),
+            ],
             on_error,
+            event_handler,
             ..Default::default()
         })
         .setup(move |ctx, ready, framework| {
@@ -135,6 +142,23 @@ pub async fn respond_err(
     )
     .await?;
     Ok(())
+}
+
+/// Bridge for poise: forwards non-slash interactions (buttons + modals) to
+/// [`interactions::handle_interaction`]. Slash commands are dispatched by poise
+/// itself before this runs (parity: Go `onInteractionCreate`).
+fn event_handler<'a>(
+    ctx: &'a serenity::Context,
+    event: &'a serenity::FullEvent,
+    _framework: poise::FrameworkContext<'a, Bot, Error>,
+    data: &'a Bot,
+) -> BoxFuture<'a, Result<(), Error>> {
+    Box::pin(async move {
+        if let serenity::FullEvent::InteractionCreate { interaction } = event {
+            interactions::handle_interaction(ctx, interaction, data).await?;
+        }
+        Ok(())
+    })
 }
 
 #[cfg(test)]
