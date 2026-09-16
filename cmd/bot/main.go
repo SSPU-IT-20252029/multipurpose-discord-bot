@@ -16,11 +16,11 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 
-	"sspu-verifier/internal/config"
-	"sspu-verifier/internal/i18n"
-	"sspu-verifier/internal/mailer"
-	"sspu-verifier/internal/store"
-	"sspu-verifier/internal/verify"
+	"sspu-multipurpose-discord-bot/internal/config"
+	"sspu-multipurpose-discord-bot/internal/i18n"
+	"sspu-multipurpose-discord-bot/internal/mailer"
+	"sspu-multipurpose-discord-bot/internal/store"
+	"sspu-multipurpose-discord-bot/internal/verify"
 )
 
 func ptrBool(b bool) *bool {

@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"sspu-verifier/internal/i18n"
-	"sspu-verifier/internal/store"
+	"sspu-multipurpose-discord-bot/internal/i18n"
+	"sspu-multipurpose-discord-bot/internal/store"
 )
 
 var (
