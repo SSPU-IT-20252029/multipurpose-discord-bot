@@ -7,6 +7,22 @@
 > (`modal_code` → `verify.Confirm()`), and the role-assignment step
 > (`GuildMemberRoleAdd`).
 
+## Implemented — parity & API notes (verified)
+
+- **`/language`** uses `#[choices("en", "cs")] language: &'static str` so the stored value is
+  exactly `en`/`cs` (values equal labels — cosmetic divergence from Go's "English"/"Čeština"
+  labels). The confirmation message uses the **previous** locale's `LanguageSetFmt` (Go reads `t`
+  before the store write — quirk mirrored).
+- **`/ratelimit`** validates `count ∈ 1..=3`, `window ∈ 15..=60` → `t.failed_save` on violation
+  (Go parity); unconfigured guild replies the **hardcoded English** `ErrMissingConfig`
+  (Go `i18n.Get(i18n.LocaleEN).ErrMissingConfig` — mirrored, including in `/verifiedrole`).
+  `rate_limit_window_ns = window * 60s`.
+- **`/verifiedrole`** (set/view/clear) shares a `load_cfg` helper; reply formats
+  `VerifiedRoleSetFmt`/`ViewFmt` via `subst`.
+- **Code modal**: `btn_enter_code` → `modal_code` (input min/max 6) → `verify.confirm` → loop the
+  returned role ids with `Http::add_member_role(guild_id, user_id, RoleId::new(id), None)`; any
+  role-add failure replies `t.err_send_failed` (Go parity); success → `t.verify_success`.
+
 ---
 
 ## 7.1 `/ratelimit`
