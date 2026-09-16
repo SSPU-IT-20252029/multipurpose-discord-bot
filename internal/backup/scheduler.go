@@ -12,7 +12,7 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 
-	"sspu-verifier/internal/store"
+	"sspu-multipurpose-discord-bot/internal/store"
 )
 
 // Frequency intervals for scheduled backups.

@@ -17,6 +17,7 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 
+	"sspu-multipurpose-discord-bot/internal/backup"
 	"sspu-multipurpose-discord-bot/internal/config"
 	"sspu-multipurpose-discord-bot/internal/i18n"
 	"sspu-multipurpose-discord-bot/internal/mailer"
