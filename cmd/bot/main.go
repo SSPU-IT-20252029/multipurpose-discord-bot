@@ -23,6 +23,10 @@ import (
 	"sspu-verifier/internal/verify"
 )
 
+func ptrBool(b bool) *bool {
+	return &b
+}
+
 var configPath = flag.String("config", "config.yml", "Path to configuration file")
 var debugMode = flag.Bool("debug", false, "Enable debug logging")
 
@@ -530,7 +534,7 @@ func (b *Bot) handleComponent(s *discordgo.Session, i *discordgo.InteractionCrea
 								Label:       t.YourEmail,
 								Style:       discordgo.TextInputShort,
 								Placeholder: t.EmailPlaceholder,
-								Required:    true,
+								Required:    ptrBool(true),
 							},
 						},
 					},
@@ -554,7 +558,7 @@ func (b *Bot) handleComponent(s *discordgo.Session, i *discordgo.InteractionCrea
 								Label:       t.CodeLabel,
 								Style:       discordgo.TextInputShort,
 								Placeholder: t.CodePlaceholder,
-								Required:    true,
+								Required:    ptrBool(true),
 								MinLength:   6,
 								MaxLength:   6,
 							},
@@ -575,20 +579,29 @@ func (b *Bot) handleModal(s *discordgo.Session, i *discordgo.InteractionCreate) 
 
 	switch data.CustomID {
 	case "modal_email":
-		email := data.Components[0].(*discordgo.ActionsRow).Components[0].(*discordgo.TextInput).Value
-		userLocale := b.getLocale(i)
-		if l, _, err := b.store.GetUserLocale(context.Background(), i.GuildID, i.Member.User.ID); err == nil && l != "" {
-			userLocale = i18n.ParseLocale(l)
-		}
-		err := b.verify.Start(context.Background(), i.GuildID, i.Member.User.ID, email, userLocale)
-		if err != nil {
-			respondErr(s, i, fmt.Sprintf(t.ErrEmailFmt, b.localizeError(i, err)))
-			return
-		}
-
-		err = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-			Type: discordgo.InteractionResponseChannelMessageWithSource,
+		_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
 			Data: &discordgo.InteractionResponseData{
+				Flags: discordgo.MessageFlagsEphemeral,
+			},
+		})
+
+		go func() {
+			email := data.Components[0].(*discordgo.ActionsRow).Components[0].(*discordgo.TextInput).Value
+			userLocale := b.getLocale(i)
+			if l, _, err := b.store.GetUserLocale(context.Background(), i.GuildID, i.Member.User.ID); err == nil && l != "" {
+				userLocale = i18n.ParseLocale(l)
+			}
+			err := b.verify.Start(context.Background(), i.GuildID, i.Member.User.ID, email, userLocale)
+			if err != nil {
+				_, _ = s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
+					Content: "❌ " + fmt.Sprintf(t.ErrEmailFmt, b.localizeError(i, err)),
+					Flags:   discordgo.MessageFlagsEphemeral,
+				})
+				return
+			}
+
+			_, _ = s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
 				Content: fmt.Sprintf(t.CodeSentFmt, email),
 				Flags:   discordgo.MessageFlagsEphemeral,
 				Components: []discordgo.MessageComponent{
@@ -602,32 +615,47 @@ func (b *Bot) handleModal(s *discordgo.Session, i *discordgo.InteractionCreate) 
 						},
 					},
 				},
-			},
-		})
-		if err != nil {
-			log.Println("Error responding:", err)
-		}
+			})
+		}()
 
 	case "modal_code":
-		code := data.Components[0].(*discordgo.ActionsRow).Components[0].(*discordgo.TextInput).Value
-		userLocale := b.getLocale(i)
-		if l, _, err := b.store.GetUserLocale(context.Background(), i.GuildID, i.Member.User.ID); err == nil && l != "" {
-			userLocale = i18n.ParseLocale(l)
-		}
-		roleIDs, err := b.verify.Confirm(context.Background(), i.GuildID, i.Member.User.ID, code)
-		if err != nil {
-			respondErr(s, i, b.localizeError(i, err))
-			return
-		}
+		_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{
+				Flags: discordgo.MessageFlagsEphemeral,
+			},
+		})
 
-		for _, roleID := range roleIDs {
-			if err := s.GuildMemberRoleAdd(i.GuildID, i.Member.User.ID, roleID); err != nil {
-				respondErr(s, i, i18n.Get(userLocale).ErrSendFailed)
+		go func() {
+			code := data.Components[0].(*discordgo.ActionsRow).Components[0].(*discordgo.TextInput).Value
+			userLocale := b.getLocale(i)
+			if l, _, err := b.store.GetUserLocale(context.Background(), i.GuildID, i.Member.User.ID); err == nil && l != "" {
+				userLocale = i18n.ParseLocale(l)
+			}
+			roleIDs, err := b.verify.Confirm(context.Background(), i.GuildID, i.Member.User.ID, code)
+			if err != nil {
+				_, _ = s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
+					Content: "❌ " + b.localizeError(i, err),
+					Flags:   discordgo.MessageFlagsEphemeral,
+				})
 				return
 			}
-		}
 
-		respondOK(s, i, i18n.Get(userLocale).VerifySuccess)
+			for _, roleID := range roleIDs {
+				if err := s.GuildMemberRoleAdd(i.GuildID, i.Member.User.ID, roleID); err != nil {
+					_, _ = s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
+						Content: "❌ " + i18n.Get(userLocale).ErrSendFailed,
+						Flags:   discordgo.MessageFlagsEphemeral,
+					})
+					return
+				}
+			}
+
+			_, _ = s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
+				Content: "✅ " + i18n.Get(userLocale).VerifySuccess,
+				Flags:   discordgo.MessageFlagsEphemeral,
+			})
+		}()
 	}
 }
 
