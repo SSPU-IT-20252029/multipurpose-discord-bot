@@ -11,6 +11,7 @@ use crate::i18n;
 use serenity::all::{
     self as serenity, ButtonStyle, CreateActionRow, CreateButton, CreateInputText,
     CreateInteractionResponse, CreateInteractionResponseMessage, CreateModal, InputTextStyle,
+    RoleId,
 };
 
 pub const BTN_VERIFY_START: &str = "btn_verify_start";
@@ -56,17 +57,21 @@ pub async fn handle_interaction(
 
     match interaction.kind() {
         serenity::InteractionType::Component => {
-            if let Some(component) = interaction.as_message_component()
-                && component.data.custom_id == BTN_VERIFY_START
-            {
-                show_email_modal(ctx, component, data).await?;
+            if let Some(component) = interaction.as_message_component() {
+                match component.data.custom_id.as_str() {
+                    BTN_VERIFY_START => show_email_modal(ctx, component, data).await?,
+                    BTN_ENTER_CODE => show_code_modal(ctx, component, data).await?,
+                    _ => {}
+                }
             }
         }
         serenity::InteractionType::Modal => {
-            if let Some(modal) = interaction.as_modal_submit()
-                && modal.data.custom_id == MODAL_EMAIL
-            {
-                submit_email(ctx, modal, data).await?;
+            if let Some(modal) = interaction.as_modal_submit() {
+                match modal.data.custom_id.as_str() {
+                    MODAL_EMAIL => submit_email(ctx, modal, data).await?,
+                    MODAL_CODE => submit_code(ctx, modal, data).await?,
+                    _ => {}
+                }
             }
         }
         _ => {}
@@ -148,5 +153,100 @@ async fn submit_email(
                 .await?;
         }
     }
+    Ok(())
+}
+
+/// Parity: Go `btn_enter_code` → open `modal_code` (6-char input).
+async fn show_code_modal(
+    ctx: &serenity::Context,
+    component: &serenity::ComponentInteraction,
+    data: &Bot,
+) -> Result<(), Error> {
+    let t = i18n::get(locale_of(data, component.guild_id, &component.user.id));
+    let row = CreateActionRow::InputText(
+        CreateInputText::new(InputTextStyle::Short, t.code_label, INPUT_CODE)
+            .placeholder(t.code_placeholder)
+            .min_length(6)
+            .max_length(6),
+    );
+    let modal = CreateModal::new(MODAL_CODE, t.code_modal_title).components(vec![row]);
+    component
+        .create_response(ctx, CreateInteractionResponse::Modal(modal))
+        .await?;
+    Ok(())
+}
+
+/// Parity: Go `modal_code` handler → `verify.Confirm`, assign each role, reply
+/// `VerifySuccess` (or the localized error / `ErrSendFailed`).
+async fn submit_code(
+    ctx: &serenity::Context,
+    modal: &serenity::ModalInteraction,
+    data: &Bot,
+) -> Result<(), Error> {
+    let locale = locale_of(data, modal.guild_id, &modal.user.id);
+    let t = i18n::get(locale);
+    let mut modal_data = modal.data.clone();
+    let code = poise::find_modal_text(&mut modal_data, INPUT_CODE).unwrap_or_default();
+    let guild_id = modal
+        .guild_id
+        .ok_or_else(|| Error::Message("verification must happen inside a server".into()))?;
+    let user_id = modal.user.id;
+
+    let role_ids = match data
+        .verify
+        .confirm(&guild_id.to_string(), &user_id.to_string(), &code)
+        .await
+    {
+        Ok(roles) => roles,
+        Err(e) => {
+            let content = format!("❌ {}", e.localize(t));
+            modal
+                .create_response(
+                    ctx,
+                    CreateInteractionResponse::Message(
+                        CreateInteractionResponseMessage::new()
+                            .content(content)
+                            .ephemeral(true),
+                    ),
+                )
+                .await?;
+            return Ok(());
+        }
+    };
+
+    for role_id in &role_ids {
+        let role = role_id.parse::<u64>().unwrap_or(0);
+        if let Err(e) = ctx
+            .http
+            .add_member_role(guild_id, user_id, RoleId::new(role), None)
+            .await
+        {
+            tracing::error!(%e, guild = %guild_id, user = %user_id, role, "failed to assign role");
+            let content = format!("❌ {}", t.err_send_failed);
+            modal
+                .create_response(
+                    ctx,
+                    CreateInteractionResponse::Message(
+                        CreateInteractionResponseMessage::new()
+                            .content(content)
+                            .ephemeral(true),
+                    ),
+                )
+                .await?;
+            return Ok(());
+        }
+    }
+
+    let content = format!("✅ {}", t.verify_success);
+    modal
+        .create_response(
+            ctx,
+            CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content(content)
+                    .ephemeral(true),
+            ),
+        )
+        .await?;
     Ok(())
 }

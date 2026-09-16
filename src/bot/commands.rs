@@ -325,3 +325,184 @@ async fn map(
     )
     .await
 }
+
+const NANOS_PER_MIN: i64 = 60 * 1_000_000_000;
+
+/// `/ratelimit` — set the email send rate limit (count per window minutes).
+///
+/// Parity: Go `cmdRateLimit` — validation, EN `ErrMissingConfig` on unset guild,
+/// reply `RateLimitSetFmt count / window min.`.
+#[poise::command(slash_command, default_member_permissions = "ADMINISTRATOR")]
+pub async fn ratelimit(
+    ctx: ApplicationContext<'_, Bot, Error>,
+    count: i64,
+    window: i64,
+) -> Result<(), Error> {
+    let t = i18n::get(
+        ctx.data()
+            .locale(ctx.guild_id().map(|g| g.get()), ctx.author().id.get()),
+    );
+    let guild_id = ctx
+        .guild_id()
+        .ok_or_else(|| Error::Message("must be run inside a server".into()))?
+        .to_string();
+
+    if !(1..=3).contains(&count) || !(15..=60).contains(&window) {
+        return respond_err(ctx, t.failed_save.to_string()).await;
+    }
+
+    let mut cfg = match ctx.data().store.get_guild_config(&guild_id)? {
+        Some(c) => c,
+        None => {
+            // Parity: Go replies with the hardcoded English ErrMissingConfig here.
+            let en = i18n::get(i18n::Locale::En);
+            return respond_err(ctx, en.err_missing_config.to_string()).await;
+        }
+    };
+    cfg.rate_limit_count = count;
+    cfg.rate_limit_window_ns = window * NANOS_PER_MIN;
+
+    if let Err(e) = ctx.data().store.save_guild_config(&cfg) {
+        tracing::error!(%e, "failed to save rate limit config");
+        return respond_err(ctx, t.failed_save.to_string()).await;
+    }
+
+    respond_ok(
+        ctx,
+        format!("{} {count} / {window} min.", t.rate_limit_set_fmt),
+    )
+    .await
+}
+
+/// `/verifiedrole` — manage the default role assigned to every verified user.
+#[poise::command(
+    slash_command,
+    subcommands("set", "view", "clear"),
+    default_member_permissions = "ADMINISTRATOR"
+)]
+pub async fn verifiedrole(ctx: ApplicationContext<'_, Bot, Error>) -> Result<(), Error> {
+    let t = i18n::get(
+        ctx.data()
+            .locale(ctx.guild_id().map(|g| g.get()), ctx.author().id.get()),
+    );
+    respond_ok(ctx, t.verified_role_desc.to_string()).await
+}
+
+async fn load_cfg(
+    ctx: &ApplicationContext<'_, Bot, Error>,
+    t: i18n::Translations,
+) -> Result<Option<GuildConfig>, ()> {
+    let guild_id = match ctx.guild_id() {
+        Some(g) => g.to_string(),
+        None => return Err(()),
+    };
+    match ctx.data().store.get_guild_config(&guild_id) {
+        Ok(Some(c)) => Ok(Some(c)),
+        Ok(None) => {
+            // Parity: Go replies with the hardcoded English ErrMissingConfig.
+            let en = i18n::get(i18n::Locale::En);
+            let _ = respond_err(*ctx, en.err_missing_config.to_string()).await;
+            Ok(None)
+        }
+        Err(e) => {
+            tracing::error!(%e, "failed to load guild config");
+            let _ = respond_err(*ctx, t.failed_save.to_string()).await;
+            Ok(None)
+        }
+    }
+}
+
+/// Set the default verified role.
+#[poise::command(slash_command)]
+async fn set(ctx: ApplicationContext<'_, Bot, Error>, role: serenity::Role) -> Result<(), Error> {
+    let t = i18n::get(
+        ctx.data()
+            .locale(ctx.guild_id().map(|g| g.get()), ctx.author().id.get()),
+    );
+    let Ok(Some(mut cfg)) = load_cfg(&ctx, t).await else {
+        return Ok(());
+    };
+    cfg.default_role_id = role.id.to_string();
+    if let Err(e) = ctx.data().store.save_guild_config(&cfg) {
+        tracing::error!(%e, "failed to save verified role");
+        return respond_err(ctx, t.failed_save.to_string()).await;
+    }
+    respond_ok(
+        ctx,
+        i18n::subst(t.verified_role_set_fmt, &[&role.id.to_string()]),
+    )
+    .await
+}
+
+/// Show the current default verified role.
+#[poise::command(slash_command)]
+async fn view(ctx: ApplicationContext<'_, Bot, Error>) -> Result<(), Error> {
+    let t = i18n::get(
+        ctx.data()
+            .locale(ctx.guild_id().map(|g| g.get()), ctx.author().id.get()),
+    );
+    let Ok(Some(cfg)) = load_cfg(&ctx, t).await else {
+        return Ok(());
+    };
+    if cfg.default_role_id.is_empty() {
+        return respond_ok(ctx, t.verified_role_not_set.to_string()).await;
+    }
+    respond_ok(
+        ctx,
+        i18n::subst(t.verified_role_view_fmt, &[cfg.default_role_id.as_str()]),
+    )
+    .await
+}
+
+/// Clear the default verified role.
+#[poise::command(slash_command)]
+async fn clear(ctx: ApplicationContext<'_, Bot, Error>) -> Result<(), Error> {
+    let t = i18n::get(
+        ctx.data()
+            .locale(ctx.guild_id().map(|g| g.get()), ctx.author().id.get()),
+    );
+    let Ok(Some(mut cfg)) = load_cfg(&ctx, t).await else {
+        return Ok(());
+    };
+    cfg.default_role_id.clear();
+    if let Err(e) = ctx.data().store.save_guild_config(&cfg) {
+        tracing::error!(%e, "failed to clear verified role");
+        return respond_err(ctx, t.failed_save.to_string()).await;
+    }
+    respond_ok(ctx, t.verified_role_cleared.to_string()).await
+}
+
+/// `/language` — set your per-guild bot language (en / cs).
+///
+/// Parity: Go `cmdLanguage` — stores `en`/`cs`; the confirmation uses the
+/// *previous* locale's `LanguageSetFmt` (Go quirk, mirrored).
+#[poise::command(slash_command)]
+pub async fn language(
+    ctx: ApplicationContext<'_, Bot, Error>,
+    #[choices("en", "cs")] language: &'static str,
+) -> Result<(), Error> {
+    let t = i18n::get(
+        ctx.data()
+            .locale(ctx.guild_id().map(|g| g.get()), ctx.author().id.get()),
+    );
+    let (guild_id, user_id) = match ctx.guild_id() {
+        Some(g) => (g.to_string(), ctx.author().id.to_string()),
+        None => return respond_err(ctx, t.failed_save.to_string()).await,
+    };
+
+    let locale = i18n::Locale::parse(language);
+    if let Err(e) = ctx
+        .data()
+        .store
+        .set_user_locale(&guild_id, &user_id, locale.code())
+    {
+        tracing::error!(%e, "failed to save user locale");
+        return respond_err(ctx, t.failed_save.to_string()).await;
+    }
+
+    let lang_name = match locale {
+        i18n::Locale::En => "English",
+        i18n::Locale::Cs => "Čeština",
+    };
+    respond_ok(ctx, i18n::subst(t.language_set_fmt, &[lang_name])).await
+}
