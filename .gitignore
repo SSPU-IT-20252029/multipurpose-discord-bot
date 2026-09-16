@@ -1,7 +1,12 @@
 config.yml
 data/
+backups/
 /bot
 *.db
 *.db-shm
 *.db-wal
 .env
+
+# Rust
+/target
+Cargo.lock.orig
