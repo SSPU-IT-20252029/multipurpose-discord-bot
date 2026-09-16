@@ -1,10 +1,10 @@
 //! Binary entry point.
 //!
-//! Parity target: Go `cmd/bot/main.go` (flags + bootstrap). Sessions 2, 5, and
-//! 8 wire in the store, Discord gateway, and backup scheduler.
+//! Parity target: Go `cmd/bot/main.go` (flags, bootstrap, signal shutdown).
 
 use clap::Parser;
-use multipurpose_discord_bot::{config, error::Error};
+use multipurpose_discord_bot::{bot, config, error::Error, mailer, store, verify};
+use poise::serenity_prelude::Client;
 
 /// Command-line interface.
 ///
@@ -23,11 +23,7 @@ pub struct Cli {
 }
 
 fn init_logging(debug: bool) {
-    let filter = if debug {
-        "debug".to_string()
-    } else {
-        "info".to_string()
-    };
+    let filter = if debug { "debug" } else { "info" };
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_target(true)
@@ -39,13 +35,31 @@ async fn main() -> Result<(), Error> {
     let cli = Cli::parse();
     init_logging(cli.debug);
 
-    // `_cfg` is consumed by later sessions (store open, bot build, scheduler).
-    let _cfg = config::Config::load(&cli.config)?;
+    let cfg = config::Config::load(&cli.config)?;
     tracing::info!(config = %cli.config, "loaded configuration");
 
-    // Session 2: open store at cfg.storage.dsn
-    // Session 5: build bot + start gateway
-    // Session 8: spawn backup scheduler
+    let store = store::Store::open(&cfg.storage.dsn)?;
+    let mailer = mailer::Mailer::new(cfg.email.api_key.clone(), cfg.email.from.clone());
+    let verify = verify::VerifyService::new(store.clone(), mailer.clone());
 
+    let token = cfg.discord.token.clone();
+    let framework = bot::build(store, mailer, verify, cli.debug);
+
+    let mut client = Client::builder(token, bot::intents())
+        .framework(framework)
+        .await?;
+
+    // Graceful shutdown on SIGINT/SIGTERM (Go: signal.Notify → close session).
+    let shard_manager = client.shard_manager.clone();
+    tokio::spawn(async move {
+        if let Err(e) = tokio::signal::ctrl_c().await {
+            tracing::error!(%e, "failed to install ctrl-c handler");
+            return;
+        }
+        tracing::info!("shutting down...");
+        shard_manager.shutdown_all().await;
+    });
+
+    client.start_autosharded().await?;
     Ok(())
 }

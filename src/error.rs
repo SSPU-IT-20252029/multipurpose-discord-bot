@@ -1,22 +1,46 @@
+use crate::store::StoreError;
+use crate::verify::VerifyError;
 use thiserror::Error;
 
 /// Top-level error type for the application.
 ///
-/// Each subsystem contributes a variant; later sessions add `Store`, `Http`,
-/// `Verify`, `Backup`, and `Discord`.
+/// Each subsystem contributes a variant; `Backup` arrives in Session 8.
+/// `serenity::Error` and `serde_yaml::Error` are boxed to keep the `Err`
+/// variant small (clippy `result_large_err`).
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("config error: {0}")]
     Config(#[from] ConfigError),
 
+    #[error("store error: {0}")]
+    Store(#[from] StoreError),
+
+    #[error("verification error: {0}")]
+    Verify(#[from] VerifyError),
+
+    #[error("discord error: {0}")]
+    Discord(Box<serenity::Error>),
+
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 
     #[error("yaml error: {0}")]
-    Yaml(#[from] serde_yaml::Error),
+    Yaml(Box<serde_yaml::Error>),
 
     #[error("shutdown signal received")]
     Shutdown,
+}
+
+impl From<serenity::Error> for Error {
+    fn from(e: serenity::Error) -> Self {
+        Self::Discord(Box::new(e))
+    }
+}
+
+impl From<serde_yaml::Error> for Error {
+    fn from(e: serde_yaml::Error) -> Self {
+        Self::Yaml(Box::new(e))
+    }
 }
 
 /// Configuration loading/validation errors.

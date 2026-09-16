@@ -8,6 +8,7 @@
 //! - Session 8: `backup`
 //! - Session 5-7: `bot` (poise command/component handlers)
 
+pub mod bot;
 pub mod config;
 pub mod error;
 pub mod i18n;
