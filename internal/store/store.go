@@ -54,6 +54,30 @@ type Store struct {
 	db *sql.DB
 }
 
+// BackupRecord mirrors the `backups` table.
+type BackupRecord struct {
+	ID           int
+	GuildID      string
+	Scope        string
+	Kind         string
+	Filepath     string
+	CreatedAt    time.Time
+	ChannelCount int
+	RoleCount    int
+	EmojiCount   int
+	BanCount     int
+}
+
+// ScheduledBackupConfig mirrors the `scheduled_backups` table.
+type ScheduledBackupConfig struct {
+	GuildID    string
+	Enabled    bool
+	Frequency  string
+	TimeOfDay  string
+	NextRun    time.Time
+	SlotCount  int
+}
+
 func Open(dsn string) (*Store, error) {
 	if dir := filepath.Dir(dsn); dir != "" && dir != "." {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -133,11 +157,31 @@ CREATE TABLE IF NOT EXISTS send_log (
 );
 CREATE INDEX IF NOT EXISTS idx_send_log_user_time ON send_log(guild_id, discord_id, sent_at);
 CREATE TABLE IF NOT EXISTS user_locales (
-	guild_id   TEXT NOT NULL,
-	user_id    TEXT NOT NULL,
-	locale     TEXT NOT NULL DEFAULT 'en',
-	PRIMARY KEY (guild_id, user_id)
-);
+ 	guild_id   TEXT NOT NULL,
+ 	user_id    TEXT NOT NULL,
+ 	locale     TEXT NOT NULL DEFAULT 'en',
+ 	PRIMARY KEY (guild_id, user_id)
+ );
+ CREATE TABLE IF NOT EXISTS backups (
+ 	id               INTEGER PRIMARY KEY AUTOINCREMENT,
+ 	guild_id         TEXT NOT NULL,
+ 	scope            TEXT NOT NULL DEFAULT 'single',
+ 	kind             TEXT NOT NULL DEFAULT 'manual',
+ 	filepath         TEXT NOT NULL,
+ 	created_at       INTEGER NOT NULL,
+ 	channel_count    INTEGER NOT NULL DEFAULT 0,
+ 	role_count       INTEGER NOT NULL DEFAULT 0,
+ 	emoji_count      INTEGER NOT NULL DEFAULT 0,
+ 	ban_count        INTEGER NOT NULL DEFAULT 0
+ );
+ CREATE TABLE IF NOT EXISTS scheduled_backups (
+ 	guild_id    TEXT PRIMARY KEY,
+ 	enabled     INTEGER NOT NULL DEFAULT 0,
+ 	frequency   TEXT NOT NULL DEFAULT '',
+ 	time_of_day TEXT NOT NULL DEFAULT '',
+ 	next_run    INTEGER NOT NULL DEFAULT 0,
+ 	slot_count  INTEGER NOT NULL DEFAULT 3
+ );
 `
 	// Enable foreign keys
 	_, err := s.db.Exec("PRAGMA foreign_keys = ON;")
@@ -433,4 +477,124 @@ func (s *Store) SetUserLocale(ctx context.Context, guildID, userID, locale strin
 		"INSERT INTO user_locales (guild_id, user_id, locale) VALUES (?, ?, ?) ON CONFLICT(guild_id, user_id) DO UPDATE SET locale = excluded.locale",
 		guildID, userID, locale)
 	return err
+}
+
+// Backup Records
+
+func (s *Store) SaveBackup(ctx context.Context, r BackupRecord) (int64, error) {
+	res, err := s.db.ExecContext(ctx,
+		`INSERT INTO backups (guild_id, scope, kind, filepath, created_at, channel_count, role_count, emoji_count, ban_count)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.GuildID, r.Scope, r.Kind, r.Filepath, r.CreatedAt.Unix(), r.ChannelCount, r.RoleCount, r.EmojiCount, r.BanCount)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+func (s *Store) ListBackups(ctx context.Context, guildID, kind string) ([]BackupRecord, error) {
+	var args []interface{}
+	query := "SELECT id, guild_id, scope, kind, filepath, created_at, channel_count, role_count, emoji_count, ban_count FROM backups WHERE 1=1"
+	if guildID != "" {
+		query += " AND guild_id = ?"
+		args = append(args, guildID)
+	}
+	if kind != "" {
+		query += " AND kind = ?"
+		args = append(args, kind)
+	}
+	query += " ORDER BY created_at DESC"
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []BackupRecord
+	for rows.Next() {
+		var r BackupRecord
+		var ts int64
+		if err := rows.Scan(&r.ID, &r.GuildID, &r.Scope, &r.Kind, &r.Filepath, &ts, &r.ChannelCount, &r.RoleCount, &r.EmojiCount, &r.BanCount); err != nil {
+			return nil, err
+		}
+		r.CreatedAt = time.Unix(ts, 0)
+		out = append(out, r)
+	}
+	return out, nil
+}
+
+func (s *Store) GetBackup(ctx context.Context, id int) (BackupRecord, bool, error) {
+	var r BackupRecord
+	var ts int64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, guild_id, scope, kind, filepath, created_at, channel_count, role_count, emoji_count, ban_count FROM backups WHERE id = ?`, id).
+		Scan(&r.ID, &r.GuildID, &r.Scope, &r.Kind, &r.Filepath, &ts, &r.ChannelCount, &r.RoleCount, &r.EmojiCount, &r.BanCount)
+	if err == sql.ErrNoRows {
+		return BackupRecord{}, false, nil
+	}
+	if err != nil {
+		return BackupRecord{}, false, err
+	}
+	r.CreatedAt = time.Unix(ts, 0)
+	return r, true, nil
+}
+
+func (s *Store) DeleteBackup(ctx context.Context, id int) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM backups WHERE id = ?`, id)
+	return err
+}
+
+// Scheduled Backup Config
+
+func (s *Store) GetScheduledConfig(ctx context.Context, guildID string) (ScheduledBackupConfig, bool, error) {
+	var c ScheduledBackupConfig
+	var enabled int
+	var nextRun int64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT guild_id, enabled, frequency, time_of_day, next_run, slot_count FROM scheduled_backups WHERE guild_id = ?`, guildID).
+		Scan(&c.GuildID, &enabled, &c.Frequency, &c.TimeOfDay, &nextRun, &c.SlotCount)
+	if err == sql.ErrNoRows {
+		return ScheduledBackupConfig{}, false, nil
+	}
+	if err != nil {
+		return ScheduledBackupConfig{}, false, err
+	}
+	c.Enabled = enabled != 0
+	c.NextRun = time.Unix(nextRun, 0)
+	return c, true, nil
+}
+
+func (s *Store) SaveScheduledConfig(ctx context.Context, c ScheduledBackupConfig) error {
+	enabled := 0
+	if c.Enabled {
+		enabled = 1
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO scheduled_backups (guild_id, enabled, frequency, time_of_day, next_run, slot_count)
+		 VALUES (?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(guild_id) DO UPDATE SET
+		 enabled=excluded.enabled, frequency=excluded.frequency, time_of_day=excluded.time_of_day,
+		 next_run=excluded.next_run, slot_count=excluded.slot_count`,
+		c.GuildID, enabled, c.Frequency, c.TimeOfDay, c.NextRun.Unix(), c.SlotCount)
+	return err
+}
+
+func (s *Store) ListScheduledBackups(ctx context.Context) ([]ScheduledBackupConfig, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT guild_id, enabled, frequency, time_of_day, next_run, slot_count FROM scheduled_backups WHERE enabled = 1`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ScheduledBackupConfig
+	for rows.Next() {
+		var c ScheduledBackupConfig
+		var enabled int
+		var nextRun int64
+		if err := rows.Scan(&c.GuildID, &enabled, &c.Frequency, &c.TimeOfDay, &nextRun, &c.SlotCount); err != nil {
+			return nil, err
+		}
+		c.Enabled = enabled != 0
+		c.NextRun = time.Unix(nextRun, 0)
+		out = append(out, c)
+	}
+	return out, nil
 }
