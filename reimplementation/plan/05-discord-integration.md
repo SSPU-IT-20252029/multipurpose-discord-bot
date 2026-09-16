@@ -8,96 +8,83 @@
 
 ---
 
-## 5.1 Bot state
+## 5.1 Bot state (implemented)
 
 ```rust
 pub struct Bot {
     pub store: Store,
     pub mailer: Mailer,
-    pub verify: VerifyService,
-    pub backup: BackupService,          // Session 8
+    pub verify: Arc<VerifyService<Mailer>>,   // generic service behind Arc
     pub debug: bool,
-}
-
-impl Bot {
-    pub fn locale(&self, ctx: &Context<'_>) -> i18n::Locale {
-        // guild + author id → stored preference (default En)
-        let (guild_id, user_id) = match ctx {
-            Context::Application(ctx) => (ctx.interaction.guild_id.clone(), ctx.interaction.user.id.to_string()),
-            Context::Component(ctx)   => (ctx.interaction.guild_id.clone(), ctx.interaction.user.id.to_string()),
-            Context::Modal(ctx)       => (ctx.interaction.guild_id.clone(), ctx.interaction.user.id.to_string()),
-            _ => (None, String::new()),
-        };
-        match (guild_id, user_id.is_empty()) {
-            (Some(g), false) => i18n::locale_for(&self.store, &g, &user_id),
-            _ => i18n::Locale::En,
-        }
-    }
+    // Session 8 adds `backup`.
 }
 ```
 
-## 5.2 Gateway intents (exact parity)
+Locale resolution avoids consuming poise `Context` — the handler extracts ids and calls:
+
+```rust
+// Bot::locale(&self, guild_id: Option<u64>, user_id: u64) -> i18n::Locale
+//   → store.get_user_locale(g.to_string(), user_id.to_string()) or En
+```
+
+Handlers pass `ctx.data().locale(ctx.guild_id().map(|g| g.get()), ctx.author().id.get())`.
+
+## 5.2 Gateway intents (implemented)
 
 | Go intent | Serenity equivalent | Reason |
 |---|---|---|
 | `Guilds` | `GatewayIntents::GUILDS` | slash commands, guild structs |
 | `GuildMembers` | `GatewayIntents::GUILD_MEMBERS` | member info for verification |
-| `GuildModeration` | `GatewayIntents::GUILD_MODERATION` | bans for backup capture |
+| `GuildModeration` | `GatewayIntents::GUILD_MODERATION` | bans + moderation (Go lists `GuildBans` separately — **merged into `GUILD_MODERATION` in serenity**) |
 | `GuildEmojis` | `GatewayIntents::GUILD_EMOJIS_AND_STICKERS` | emoji backup |
-| `GuildBans` | `GatewayIntents::GUILD_BANS` | ban list for backup |
 
 ```rust
-fn intents() -> GatewayIntents {
+pub fn intents() -> GatewayIntents {
     GatewayIntents::GUILDS
         | GatewayIntents::GUILD_MEMBERS
         | GatewayIntents::GUILD_MODERATION
         | GatewayIntents::GUILD_EMOJIS_AND_STICKERS
-        | GatewayIntents::GUILD_BANS
 }
 ```
 
 > **Deployment note (parity):** Server Members Intent must be enabled in the Developer Portal,
 > same as the Go bot. Document this in the Docker/CI session and README.
 
-## 5.3 Framework / global command registration
+## 5.3 Framework / global command registration (implemented)
 
-With `poise`, every handler `#[command]` is auto-registered in the command list. On `on_ready`
-we do a **global bulk overwrite** to guarantee the exact command surface (parity with
-`ApplicationCommandBulkOverwrite`):
+With `poise`, every handler `#[command]` is auto-registered in the command list. On startup
+(poise `setup`, run on `Ready`) we do a **global bulk overwrite** to guarantee the exact command
+surface (parity with `ApplicationCommandBulkOverwrite`):
 
 ```rust
-let commands = vec![
-    help(), setup(), regex(), csv(), ratelimit(), verifiedrole(),
-    language(), backup(),   // add as each session lands
-];
-
 let framework = poise::Framework::builder()
     .options(poise::FrameworkOptions {
-        commands,
-        on_error: |err| Box::pin(on_error(err)),
+        commands: vec![commands::help()],   // grows each session
+        on_error,
         ..Default::default()
     })
-    .token(cfg.discord.token.clone())
-    .intents(intents())
-    .setup(|ctx, ready, framework| Box::pin(async move {
-        // Global registration: fetch each command's create_data and bulk-overwrite.
-        // poise exposes `framework.commands`; construct Vec<CreateApplicationCommand>.
-        let global_commands: Vec<_> = framework.commands.iter()
-            .map(|c| c.create_command_as_global(&ctx.serenity_context))
-            .collect();
-        ctx.http.create_global_application_commands(global_commands).await?;
-
-        let bot = Arc::new(Bot::new(cfg.clone()));
-        tracing::info!("logged in as {}", ready.user.name);
-        Ok(bot)
+    .setup(move |ctx, ready, framework| Box::pin(async move {
+        // Bulk overwrite: PUT /applications/{id}/commands replaces all global commands.
+        poise::builtins::register_globally(&ctx.http, &framework.options().commands).await?;
+        tracing::info!(user = %ready.user.name, "logged in");
+        Ok(Bot { store, mailer, verify, debug })
     }))
     .build();
 ```
 
-> **Why bulk overwrite (parity):** the Go bot *replaces* all global commands on startup so stale
-> command definitions never linger. `poise` normally registers lazily; an explicit bulk
-> overwrite preserves the exact Go behavior. Guard against "command already registered" races by
-> bulk-overwriting rather than per-command.
+`main` then creates the serenity client — **poise 0.6 moved token + intents to the serenity
+`Client::builder`** (not the poise builder):
+
+```rust
+let mut client = serenity::Client::builder(token, bot::intents())
+    .framework(framework)
+    .await?;
+// ctrl-c → client.shard_manager.shutdown_all() (Go signal.Notify parity)
+client.start_autosharded().await?;
+```
+
+> **Why bulk overwrite (parity):** `register_globally` → `set_global_commands` uses `PUT`, which
+> replaces all global commands so stale definitions never linger — exactly Go's behavior.
 
 ## 5.4 Interaction dispatch
 
@@ -124,53 +111,68 @@ Any unknown/unhandled interaction → log + (if deferred) edit, else ignore (par
 ## 5.5 Error handling (on_error)
 
 ```rust
-async fn on_error(error: poise::FrameworkError<'_, Bot, error::Error>) {
-    match error {
-        FrameworkError::Command { error, ctx, .. } => {
-            // Log server error; try to DM or ephemeral-reply a generic "something broke"
-            // using the user's locale if the ctx still permits a reply.
+fn on_error(error: poise::FrameworkError<'_, Bot, error::Error>) -> BoxFuture<'_, ()> {
+    Box::pin(async move {
+        match error {
+            FrameworkError::Command { error, ctx, .. } => {
+                tracing::error!(%error, "command failed");
+                // best-effort ephemeral "An error occurred."
+                let _ = ctx.send(CreateReply::default().content("An error occurred.").ephemeral(true)).await;
+            }
+            other => tracing::error!("unhandled framework error: {other}"),
         }
-        _ => tracing::error!("unhandled framework error: {error:?}"),
-    }
+    })
 }
 ```
+
+> `FrameworkError` implements `Display` when `E: Display`, so `{other}` avoids requiring
+> `Bot: Debug`.
 
 Verification errors (`VerifyError`) are *not* surfaced through `on_error` — handlers catch them
 and reply with the localized message (see Sessions 6–7).
 
-## 5.6 Ephemeral reply helper
+## 5.6 Ephemeral reply helpers (implemented)
 
 ```rust
-/// Reply ephemeral using the user's locale for the message.
-pub async fn ephemeral_reply<T, M>(ctx: poise::ApplicationContext<'_, Bot, error::Error>, content: M) -> Result<(), error::Error>
-where T: Into<serenity::model::channel::Message>, M: Into<String>,
-{
-    ctx.send(|b| b.content(content).ephemeral(true)).await?;
+// poise::CreateReply (not a closure); ctx.send consumes a copy of the ctx.
+pub async fn respond_ok(ctx: ApplicationContext<'_, Bot, Error>, msg: String) -> Result<(), Error> {
+    ctx.send(CreateReply::default().content(format!("✅ {msg}")).ephemeral(true)).await?;
+    Ok(())
+}
+pub async fn respond_err(ctx: ApplicationContext<'_, Bot, Error>, msg: String) -> Result<(), Error> {
+    ctx.send(CreateReply::default().content(format!("❌ {msg}")).ephemeral(true)).await?;
     Ok(())
 }
 ```
 
-## 5.7 `/help` command
+Parity: Go `respondOK` / `respondErr` — `✅ ` / `❌ ` prefixes, ephemeral.
 
-Parity: ephemeral embed listing all commands, split into **Administrator** (setup, regex, csv,
-ratelimit, verifiedrole, backup) and **User** (language, help), with localized descriptions.
+## 5.7 `/help` command (implemented)
+
+Parity: Go `cmdHelp` — ephemeral embed, title `HelpText`, color `0x3b82f6`, description is the
+**exact** Go layout: `HelpClickHint + "\n\n" + "**Administrator**\n"` + `/setup /regex /csv
+/ratelimit /verifiedrole` lines + `"\n\n**User**\n"` + `/language /help`. **`/backup` is NOT
+listed** (Go parity). Uses `CreateEmbed::default().title(...).description(...).color(0x3b82f6)`
+(no field-based layout — Go used one description string).
 
 ```rust
-#[poise::command(slash_command, category = "User")]
-pub async fn help(ctx: poise::ApplicationContext<'_, Bot, error::Error>) -> Result<(), error::Error> {
-    let t = i18n::get(ctx.data().locale(&ctx.into()).await);
-    // build embed:
-    //   title: t.help_title, color: brand, fields per group with t.*desc
-    ctx.send(|b| b.embed(|e| {
-        e.title(t.help_title)
-         .field(t.help_admin_title, admin_lines(t), false)
-         .field(t.help_user_title, user_lines(t), false)
-    }).ephemeral(true)).await?;
+#[poise::command(slash_command)]
+pub async fn help(ctx: ApplicationContext<'_, Bot, Error>) -> Result<(), Error> {
+    let t = i18n::get(ctx.data().locale(ctx.guild_id().map(|g| g.get()), ctx.author().id.get()));
+    let description = format!(
+        "{hint}\n\n**{admin}**\n`/setup` - {setup}\n`/regex` - {regex}\n`/csv` - {csv}\n\
+         `/ratelimit` - {ratelimit}\n`/verifiedrole` - {verifiedrole}\n\n**{user}**\n\
+         `/language` - {language}\n`/help` - {help}",
+        hint = t.help_click_hint, admin = t.help_admin_title, /* ... */
+    );
+    ctx.send(CreateReply::default()
+        .embed(CreateEmbed::default().title(t.help_text).description(description).color(0x3b82f6))
+        .ephemeral(true)).await?;
     Ok(())
 }
 ```
 
-## 5.8 `main.rs` final wiring (this session)
+## 5.8 `main.rs` final wiring (implemented)
 
 ```rust
 #[tokio::main]
@@ -183,12 +185,21 @@ async fn main() -> Result<(), error::Error> {
     let mailer = mailer::Mailer::new(cfg.email.api_key.clone(), cfg.email.from.clone());
     let verify = verify::VerifyService::new(store.clone(), mailer.clone());
 
-    // Session 8 adds: backup service + scheduler task via tokio::spawn.
+    let token = cfg.discord.token.clone();
+    let framework = bot::build(store, mailer, verify, cli.debug);
 
-    framework.run(shard_manager).await?;
+    let mut client = serenity::Client::builder(token, bot::intents()).framework(framework).await?;
+    let shard_manager = client.shard_manager.clone();
+    tokio::spawn(async move {
+        let _ = tokio::signal::ctrl_c().await;       // Go signal.Notify(SIGINT/SIGTERM)
+        shard_manager.shutdown_all().await;
+    });
+    client.start_autosharded().await?;
     Ok(())
 }
 ```
+
+> Session 8 adds: backup service + scheduler task via `tokio::spawn`.
 
 ---
 
