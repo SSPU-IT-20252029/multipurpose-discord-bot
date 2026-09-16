@@ -7,6 +7,29 @@
 > **Parity target:** Go `cmd/bot/main.go` handlers for setup/regex/csv + `handleComponent`
 > (`btn_verify_start`) + `handleModal` (`modal_email`).
 
+## Implemented — parity & API notes (verified)
+
+- **poise 0.6 does NOT dispatch components/modals as commands.** Buttons and modal submissions
+  are handled via `FrameworkOptions::event_handler` (called for every `FullEvent`), mirroring Go's
+  `onInteractionCreate` switch. Custom ids are constants in `src/bot/interactions.rs`.
+- **Import namespace:** use `serenity::all` for model/builder types. `poise::serenity_prelude`
+  re-exports `serenity::all::*` but from poise's own serenity dependency (fewer features) — the
+  direct `serenity` crate is safer for `Context`/`FullEvent`/`CreateModal` etc.
+- **Interaction variants** are `Interaction::Component` / `Interaction::Modal` (serenity 0.12
+  renamed `MessageComponent`/`ModalSubmit`).
+- **Choices:** `/setup mode` uses `#[choices("REGEX", "CSV")] mode: &'static str` — a String option
+  whose choice **value equals the label**. Values match Go exactly ("REGEX"/"CSV"); labels differ
+  cosmetically ("REGEX" vs Go's "Regex Matching").
+- **`respond_ok`/`respond_err`** take `ApplicationContext` (Copy) and use `poise::CreateReply`.
+- **Setup embed/button:** `ChannelId::send_message(&http, CreateMessage::new().embed(CreateEmbed).components(Vec<CreateActionRow>))` — serenity 0.12 builder methods take values, not closures.
+- **Modal + message responses** built via `CreateModal::new(custom_id, title).components(...)`,
+  `CreateInteractionResponse::Modal(...)` / `::Message(CreateInteractionResponseMessage)`, sent
+  with `ComponentInteraction::create_response` / `ModalInteraction::create_response`.
+- **Attachment download** via `reqwest::get(&file.url)` (Go `http.Get`).
+- **Email modal** reads the input with `poise::find_modal_text(&mut data, INPUT_EMAIL)`.
+- Admin gating uses `default_member_permissions = "ADMINISTRATOR"` at the command level (Go
+  `DefaultMemberPermissions`); no runtime check needed (Discord enforces it).
+
 ---
 
 ## 6.1 Admin gating (shared)
