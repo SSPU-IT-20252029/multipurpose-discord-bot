@@ -10,8 +10,8 @@ import (
 
 	"github.com/resend/resend-go/v4"
 
-	"sspu-verifier/internal/config"
-	"sspu-verifier/internal/i18n"
+	"sspu-multipurpose-discord-bot/internal/config"
+	"sspu-multipurpose-discord-bot/internal/i18n"
 )
 
 const sendTimeout = 30 * time.Second

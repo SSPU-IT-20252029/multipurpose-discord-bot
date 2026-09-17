@@ -24,7 +24,8 @@ type Email struct {
 }
 
 type Storage struct {
-	DSN string `yaml:"dsn"`
+	DSN       string `yaml:"dsn"`
+	BackupDir string `yaml:"backup_dir"`
 }
 
 var envRe = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
@@ -52,6 +53,9 @@ func Load(path string) (*Config, error) {
 func applyDefaults(cfg *Config) {
 	if cfg.Storage.DSN == "" {
 		cfg.Storage.DSN = "./data/verifier.db"
+	}
+	if cfg.Storage.BackupDir == "" {
+		cfg.Storage.BackupDir = "./backups"
 	}
 }
 

@@ -11,18 +11,24 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
 
-	"sspu-verifier/internal/config"
-	"sspu-verifier/internal/i18n"
-	"sspu-verifier/internal/mailer"
-	"sspu-verifier/internal/store"
-	"sspu-verifier/internal/verify"
+	"sspu-multipurpose-discord-bot/internal/backup"
+	"sspu-multipurpose-discord-bot/internal/config"
+	"sspu-multipurpose-discord-bot/internal/i18n"
+	"sspu-multipurpose-discord-bot/internal/mailer"
+	"sspu-multipurpose-discord-bot/internal/store"
+	"sspu-multipurpose-discord-bot/internal/verify"
 )
+
+func ptrBool(b bool) *bool {
+	return &b
+}
 
 var configPath = flag.String("config", "config.yml", "Path to configuration file")
 var debugMode = flag.Bool("debug", false, "Enable debug logging")
@@ -31,6 +37,7 @@ type Bot struct {
 	session *discordgo.Session
 	store   *store.Store
 	verify  *verify.Service
+	backup  *backup.Scheduler
 }
 
 func main() {
@@ -69,23 +76,32 @@ func main() {
 		session: dg,
 		store:   st,
 		verify:  v,
+		backup:  backup.NewScheduler(dg, st, cfg.Storage.BackupDir),
 	}
 
 	dg.AddHandler(bot.onReady)
 	dg.AddHandler(bot.onInteractionCreate)
 
-	dg.Identify.Intents = discordgo.IntentsGuilds
+	dg.Identify.Intents = discordgo.IntentsGuilds |
+		discordgo.IntentsGuildMembers |
+		discordgo.IntentGuildModeration |
+		discordgo.IntentsGuildEmojis |
+		discordgo.IntentsGuildBans
 
 	if err := dg.Open(); err != nil {
 		log.Fatalf("Error connecting to Discord: %v", err)
 	}
 	defer dg.Close()
 
+	// Start backup scheduler.
+	bot.backup.Start()
+
 	log.Println("Bot is running. Press CTRL-C to exit.")
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 	<-stop
 	log.Println("Shutting down...")
+	bot.backup.Stop()
 }
 
 func (b *Bot) getLocale(i *discordgo.InteractionCreate) i18n.Locale {
@@ -311,6 +327,119 @@ func (b *Bot) onReady(s *discordgo.Session, r *discordgo.Ready) {
 			Name:        "help",
 			Description: en.HelpDesc,
 		},
+		{
+			Name:        "backup",
+			Description: en.BackupDesc,
+			Options: []*discordgo.ApplicationCommandOption{
+				{
+					Type:        discordgo.ApplicationCommandOptionSubCommand,
+					Name:        "create",
+					Description: en.BackupCreate,
+					Options: []*discordgo.ApplicationCommandOption{
+						{
+							Type:        discordgo.ApplicationCommandOptionString,
+							Name:        "scope",
+							Description: en.BackupScope,
+							Required:    false,
+							Choices: []*discordgo.ApplicationCommandOptionChoice{
+								{Name: "Single server", Value: "single"},
+								{Name: "Multi-server", Value: "multi"},
+							},
+						},
+						{
+							Type:        discordgo.ApplicationCommandOptionString,
+							Name:        "guild-id",
+							Description: en.BackupGuildID,
+							Required:    false,
+						},
+					},
+				},
+				{
+					Type:        discordgo.ApplicationCommandOptionSubCommand,
+					Name:        "restore",
+					Description: en.BackupRestore,
+					Options: []*discordgo.ApplicationCommandOption{
+						{
+							Type:        discordgo.ApplicationCommandOptionInteger,
+							Name:        "id",
+							Description: "Backup ID",
+							Required:    true,
+						},
+						{
+							Type:        discordgo.ApplicationCommandOptionString,
+							Name:        "guild-id",
+							Description: en.BackupGuildID,
+							Required:    false,
+						},
+					},
+				},
+				{
+					Type:        discordgo.ApplicationCommandOptionSubCommand,
+					Name:        "list",
+					Description: en.BackupList,
+					Options: []*discordgo.ApplicationCommandOption{
+						{
+							Type:        discordgo.ApplicationCommandOptionString,
+							Name:        "type",
+							Description: en.BackupAllLabel,
+							Required:    false,
+							Choices: []*discordgo.ApplicationCommandOptionChoice{
+								{Name: "All", Value: "all"},
+								{Name: "Manual", Value: "manual"},
+								{Name: "Scheduled", Value: "scheduled"},
+							},
+						},
+					},
+				},
+				{
+					Type:        discordgo.ApplicationCommandOptionSubCommand,
+					Name:        "schedule",
+					Description: en.BackupSchedule,
+					Options: []*discordgo.ApplicationCommandOption{
+						{
+							Type:        discordgo.ApplicationCommandOptionString,
+							Name:        "frequency",
+							Description: en.BackupFreq,
+							Required:    true,
+							Choices: []*discordgo.ApplicationCommandOptionChoice{
+								{Name: "Every 12 hours", Value: "12h"},
+								{Name: "Daily", Value: "daily"},
+								{Name: "Weekly", Value: "weekly"},
+								{Name: "Every 2 weeks", Value: "biweekly"},
+								{Name: "Monthly", Value: "monthly"},
+								{Name: "Every 3 months", Value: "3months"},
+								{Name: "Every 6 months", Value: "6months"},
+							},
+						},
+						{
+							Type:        discordgo.ApplicationCommandOptionString,
+							Name:        "time",
+							Description: en.BackupTimeOfDay,
+							Required:    false,
+						},
+					},
+				},
+				{
+					Type:        discordgo.ApplicationCommandOptionSubCommand,
+					Name:        "schedule-off",
+					Description: en.BackupScheduleOff,
+				},
+				{
+					Type:        discordgo.ApplicationCommandOptionSubCommand,
+					Name:        "delete",
+					Description: en.BackupDelete,
+					Options: []*discordgo.ApplicationCommandOption{
+						{
+							Type:        discordgo.ApplicationCommandOptionInteger,
+							Name:        "id",
+							Description: "Backup ID",
+							Required:    true,
+						},
+					},
+				},
+			},
+			DefaultMemberPermissions: func(i int64) *int64 { return &i }(discordgo.PermissionAdministrator),
+		},
 	}
 
 	_, err := s.ApplicationCommandBulkOverwrite(s.State.User.ID, "", commands)
@@ -356,6 +485,8 @@ func (b *Bot) handleSlashCommand(s *discordgo.Session, i *discordgo.InteractionC
 		b.cmdRateLimit(s, i)
 	case "verifiedrole":
 		b.cmdVerifiedRole(s, i)
+	case "backup":
+		b.cmdBackup(s, i)
 	case "help":
 		b.cmdHelp(s, i)
 	}
@@ -732,7 +863,7 @@ func (b *Bot) handleComponent(s *discordgo.Session, i *discordgo.InteractionCrea
 								Label:       t.YourEmail,
 								Style:       discordgo.TextInputShort,
 								Placeholder: t.EmailPlaceholder,
-								Required:    true,
+								Required:    ptrBool(true),
 							},
 						},
 					},
@@ -756,7 +887,7 @@ func (b *Bot) handleComponent(s *discordgo.Session, i *discordgo.InteractionCrea
 								Label:       t.CodeLabel,
 								Style:       discordgo.TextInputShort,
 								Placeholder: t.CodePlaceholder,
-								Required:    true,
+								Required:    ptrBool(true),
 								MinLength:   6,
 								MaxLength:   6,
 							},
@@ -847,20 +978,29 @@ func (b *Bot) handleModal(s *discordgo.Session, i *discordgo.InteractionCreate) 
 
 	switch data.CustomID {
 	case "modal_email":
-		email := data.Components[0].(*discordgo.ActionsRow).Components[0].(*discordgo.TextInput).Value
-		userLocale := b.getLocale(i)
-		if l, _, err := b.store.GetUserLocale(context.Background(), i.GuildID, i.Member.User.ID); err == nil && l != "" {
-			userLocale = i18n.ParseLocale(l)
-		}
-		err := b.verify.Start(context.Background(), i.GuildID, i.Member.User.ID, email, userLocale)
-		if err != nil {
-			respondErr(s, i, fmt.Sprintf(t.ErrEmailFmt, b.localizeError(i, err)))
-			return
-		}
-
-		err = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-			Type: discordgo.InteractionResponseChannelMessageWithSource,
+		_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
 			Data: &discordgo.InteractionResponseData{
+				Flags: discordgo.MessageFlagsEphemeral,
+			},
+		})
+
+		go func() {
+			email := data.Components[0].(*discordgo.ActionsRow).Components[0].(*discordgo.TextInput).Value
+			userLocale := b.getLocale(i)
+			if l, _, err := b.store.GetUserLocale(context.Background(), i.GuildID, i.Member.User.ID); err == nil && l != "" {
+				userLocale = i18n.ParseLocale(l)
+			}
+			err := b.verify.Start(context.Background(), i.GuildID, i.Member.User.ID, email, userLocale)
+			if err != nil {
+				_, _ = s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
+					Content: "❌ " + fmt.Sprintf(t.ErrEmailFmt, b.localizeError(i, err)),
+					Flags:   discordgo.MessageFlagsEphemeral,
+				})
+				return
+			}
+
+			_, _ = s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
 				Content: fmt.Sprintf(t.CodeSentFmt, email),
 				Flags:   discordgo.MessageFlagsEphemeral,
 				Components: []discordgo.MessageComponent{
@@ -874,32 +1014,47 @@ func (b *Bot) handleModal(s *discordgo.Session, i *discordgo.InteractionCreate) 
 						},
 					},
 				},
-			},
-		})
-		if err != nil {
-			log.Println("Error responding:", err)
-		}
+			})
+		}()
 
 	case "modal_code":
-		code := data.Components[0].(*discordgo.ActionsRow).Components[0].(*discordgo.TextInput).Value
-		userLocale := b.getLocale(i)
-		if l, _, err := b.store.GetUserLocale(context.Background(), i.GuildID, i.Member.User.ID); err == nil && l != "" {
-			userLocale = i18n.ParseLocale(l)
-		}
-		roleIDs, err := b.verify.Confirm(context.Background(), i.GuildID, i.Member.User.ID, code)
-		if err != nil {
-			respondErr(s, i, b.localizeError(i, err))
-			return
-		}
+		_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{
+				Flags: discordgo.MessageFlagsEphemeral,
+			},
+		})
 
-		for _, roleID := range roleIDs {
-			if err := s.GuildMemberRoleAdd(i.GuildID, i.Member.User.ID, roleID); err != nil {
-				respondErr(s, i, i18n.Get(userLocale).ErrSendFailed)
+		go func() {
+			code := data.Components[0].(*discordgo.ActionsRow).Components[0].(*discordgo.TextInput).Value
+			userLocale := b.getLocale(i)
+			if l, _, err := b.store.GetUserLocale(context.Background(), i.GuildID, i.Member.User.ID); err == nil && l != "" {
+				userLocale = i18n.ParseLocale(l)
+			}
+			roleIDs, err := b.verify.Confirm(context.Background(), i.GuildID, i.Member.User.ID, code)
+			if err != nil {
+				_, _ = s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
+					Content: "❌ " + b.localizeError(i, err),
+					Flags:   discordgo.MessageFlagsEphemeral,
+				})
 				return
 			}
-		}
 
-		respondOK(s, i, i18n.Get(userLocale).VerifySuccess)
+			for _, roleID := range roleIDs {
+				if err := s.GuildMemberRoleAdd(i.GuildID, i.Member.User.ID, roleID); err != nil {
+					_, _ = s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
+						Content: "❌ " + i18n.Get(userLocale).ErrSendFailed,
+						Flags:   discordgo.MessageFlagsEphemeral,
+					})
+					return
+				}
+			}
+
+			_, _ = s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
+				Content: "✅ " + i18n.Get(userLocale).VerifySuccess,
+				Flags:   discordgo.MessageFlagsEphemeral,
+			})
+		}()
 	}
 }
 
@@ -1055,5 +1210,199 @@ func respondErr(s *discordgo.Session, i *discordgo.InteractionCreate, msg string
 			Flags:   discordgo.MessageFlagsEphemeral,
 		},
 	})
+}
+
+// --- Backup commands ---
+
+func (b *Bot) cmdBackup(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	t := i18n.Get(b.getLocale(i))
+	subcmd := i.ApplicationCommandData().Options[0]
+	switch subcmd.Name {
+	case "create":
+		b.backupCreate(s, i, subcmd, t)
+	case "restore":
+		b.backupRestore(s, i, subcmd, t)
+	case "list":
+		b.backupList(s, i, subcmd, t)
+	case "schedule":
+		b.backupSchedule(s, i, subcmd, t)
+	case "schedule-off":
+		b.backupScheduleOff(s, i, t)
+	case "delete":
+		b.backupDelete(s, i, subcmd, t)
+	}
+}
+
+func (b *Bot) backupCreate(s *discordgo.Session, i *discordgo.InteractionCreate, subcmd *discordgo.ApplicationCommandInteractionDataOption, t i18n.Translations) {
+	scope := backup.ScopeSingle
+	guildID := i.GuildID
+	for _, o := range subcmd.Options {
+		switch o.Name {
+		case "scope":
+			if o.StringValue() == "multi" {
+				scope = backup.ScopeMulti
+			}
+		case "guild-id":
+			guildID = o.StringValue()
+		}
+	}
+	if scope == backup.ScopeMulti && guildID == "" {
+		respondErr(s, i, t.BackupGuildID)
+		return
+	}
+
+	data, err := backup.CaptureGuild(s, guildID)
+	if err != nil {
+		respondErr(s, i, t.BackupErrorCapture)
+		return
+	}
+	data.Scope = scope
+
+	assetsDir := filepath.Join(b.backup.BackupDir(), "assets", fmt.Sprintf("backup_%d", time.Now().UnixNano()))
+	if err := backup.DownloadEmojiAssets(data, assetsDir); err != nil {
+		log.Printf("[backup] emoji download: %v", err)
+	}
+
+	if err := os.MkdirAll(b.backup.BackupDir(), 0o755); err != nil {
+		respondErr(s, i, t.BackupErrorSave)
+		return
+	}
+	filePath := filepath.Join(b.backup.BackupDir(), fmt.Sprintf("backup_%s_%s.json", guildID, time.Now().Format("20060102_150405")))
+	if err := backup.WriteJSON(filePath, data); err != nil {
+		respondErr(s, i, t.BackupErrorSave)
+		return
+	}
+
+	rec := store.BackupRecord{
+		GuildID:      guildID,
+		Scope:        string(scope),
+		Kind:         string(backup.KindManual),
+		Filepath:     filePath,
+		CreatedAt:    time.Now().UTC(),
+		ChannelCount: len(data.Channels),
+		RoleCount:    len(data.Roles),
+		EmojiCount:   len(data.Emojis),
+		BanCount:     len(data.Bans),
+	}
+	if _, err := b.store.SaveBackup(context.Background(), rec); err != nil {
+		respondErr(s, i, t.BackupErrorSave)
+		return
+	}
+
+	respondOK(s, i, fmt.Sprintf(t.BackupCreatedFmt, filePath))
+}
+
+func (b *Bot) backupRestore(s *discordgo.Session, i *discordgo.InteractionCreate, subcmd *discordgo.ApplicationCommandInteractionDataOption, t i18n.Translations) {
+	var id int64
+	var targetGuildID string
+	for _, o := range subcmd.Options {
+		switch o.Name {
+		case "id":
+			id = o.IntValue()
+		case "guild-id":
+			targetGuildID = o.StringValue()
+		}
+	}
+	if targetGuildID == "" {
+		targetGuildID = i.GuildID
+	}
+
+	rec, ok, err := b.store.GetBackup(context.Background(), int(id))
+	if err != nil || !ok {
+		respondErr(s, i, t.BackupErrorList)
+		return
+	}
+
+	var data backup.BackupData
+	if err := backup.ReadJSON(rec.Filepath, &data); err != nil {
+		respondErr(s, i, t.BackupErrorRestore)
+		return
+	}
+
+	if err := backup.RestoreGuild(s, &data, targetGuildID); err != nil {
+		respondErr(s, i, t.BackupErrorRestore)
+		return
+	}
+
+	respondOK(s, i, fmt.Sprintf(t.BackupRestoredFmt, rec.Filepath))
+}
+
+func (b *Bot) backupList(s *discordgo.Session, i *discordgo.InteractionCreate, subcmd *discordgo.ApplicationCommandInteractionDataOption, t i18n.Translations) {
+	kind := ""
+	for _, o := range subcmd.Options {
+		if o.Name == "type" {
+			kind = o.StringValue()
+		}
+	}
+	records, err := b.store.ListBackups(context.Background(), i.GuildID, kind)
+	if err != nil {
+		respondErr(s, i, t.BackupErrorList)
+		return
+	}
+	if len(records) == 0 {
+		respondOK(s, i, t.BackupNoBackups)
+		return
+	}
+	var msg strings.Builder
+	for _, r := range records {
+		msg.WriteString(fmt.Sprintf("ID: %d | %s | %s | %s | %d channels, %d roles, %d emojis, %d bans\n",
+			r.ID, r.Kind, r.Scope, r.CreatedAt.Format("2006-01-02 15:04"), r.ChannelCount, r.RoleCount, r.EmojiCount, r.BanCount))
+	}
+	respondOK(s, i, msg.String())
+}
+
+func (b *Bot) backupSchedule(s *discordgo.Session, i *discordgo.InteractionCreate, subcmd *discordgo.ApplicationCommandInteractionDataOption, t i18n.Translations) {
+	var freq, timeOfDay string
+	for _, o := range subcmd.Options {
+		switch o.Name {
+		case "frequency":
+			freq = o.StringValue()
+		case "time":
+			timeOfDay = o.StringValue()
+		}
+	}
+
+	cfg := store.ScheduledBackupConfig{
+		GuildID:    i.GuildID,
+		Enabled:    true,
+		Frequency:  freq,
+		TimeOfDay:  timeOfDay,
+		SlotCount:  3,
+		NextRun:    time.Now().Add(backup.FrequencyInterval(freq)),
+	}
+	if err := b.store.SaveScheduledConfig(context.Background(), cfg); err != nil {
+		respondErr(s, i, t.BackupErrorSave)
+		return
+	}
+
+	respondOK(s, i, fmt.Sprintf(t.BackupScheduledFmt, freq))
+}
+
+func (b *Bot) backupScheduleOff(s *discordgo.Session, i *discordgo.InteractionCreate, t i18n.Translations) {
+	cfg := store.ScheduledBackupConfig{
+		GuildID:    i.GuildID,
+		Enabled:    false,
+		SlotCount:  3,
+	}
+	if err := b.store.SaveScheduledConfig(context.Background(), cfg); err != nil {
+		respondErr(s, i, t.BackupErrorSave)
+		return
+	}
+	respondOK(s, i, t.BackupScheduledOff)
+}
+
+func (b *Bot) backupDelete(s *discordgo.Session, i *discordgo.InteractionCreate, subcmd *discordgo.ApplicationCommandInteractionDataOption, t i18n.Translations) {
+	id := int(subcmd.Options[0].IntValue())
+	rec, ok, err := b.store.GetBackup(context.Background(), id)
+	if err != nil || !ok {
+		respondErr(s, i, t.BackupErrorDelete)
+		return
+	}
+	_ = os.Remove(rec.Filepath)
+	if err := b.store.DeleteBackup(context.Background(), id); err != nil {
+		respondErr(s, i, t.BackupErrorDelete)
+		return
+	}
+	respondOK(s, i, fmt.Sprintf(t.BackupDeletedFmt, rec.Filepath))
 }
 

@@ -114,6 +114,39 @@ type Translations struct {
 	EmailSenderFallback string
 	DefaultSubject    string
 	HTMLTitle         string
+
+	// Backup
+	BackupDesc            string
+	BackupCreate          string
+	BackupRestore         string
+	BackupList            string
+	BackupSchedule        string
+	BackupScheduleOff     string
+	BackupDelete          string
+	BackupScope           string
+	BackupScopeSingle     string
+	BackupScopeMulti      string
+	BackupGuildID         string
+	BackupFreq            string
+	BackupTimeOfDay       string
+	BackupCreatedFmt      string
+	BackupRestoredFmt     string
+	BackupNoBackups       string
+	BackupDeletedFmt      string
+	BackupScheduledFmt     string
+	BackupScheduledOff     string
+	BackupScheduleDisabled string
+	BackupErrorCapture    string
+	BackupErrorRestore    string
+	BackupErrorSave       string
+	BackupErrorList       string
+	BackupErrorDelete     string
+	BackupConfirmRestore  string
+	BackupConfirmDelete   string
+	BackupNextRunFmt      string
+	BackupManualLabel     string
+	BackupScheduledLabel  string
+	BackupAllLabel        string
 }
 
 var en = Translations{
@@ -212,6 +245,39 @@ var en = Translations{
 	EmailSenderFallback: "Discord bot",
 	DefaultSubject:     "Verification code",
 	HTMLTitle:          "Discord Verification",
+
+	// Backup
+	BackupDesc:            "Backup and restore server structure",
+	BackupCreate:          "Create a backup",
+	BackupRestore:         "Restore a backup",
+	BackupList:            "List backups",
+	BackupSchedule:        "Configure scheduled backups",
+	BackupScheduleOff:     "Disable scheduled backups",
+	BackupDelete:          "Delete a backup",
+	BackupScope:           "Backup scope",
+	BackupScopeSingle:     "Single server (current guild)",
+	BackupScopeMulti:      "Multi-server (requires guild ID)",
+	BackupGuildID:         "Target guild ID",
+	BackupFreq:            "Frequency",
+	BackupTimeOfDay:       "Time of day (HH:MM)",
+	BackupCreatedFmt:      "Backup created: %s",
+	BackupRestoredFmt:     "Backup restored: %s",
+	BackupNoBackups:       "No backups found.",
+	BackupDeletedFmt:      "Backup deleted: %s",
+	BackupScheduledFmt:    "Scheduled backups enabled: %s",
+	BackupScheduledOff:     "Scheduled backups disabled.",
+	BackupScheduleDisabled: "Scheduled backups are disabled.",
+	BackupErrorCapture:    "Failed to capture server structure.",
+	BackupErrorRestore:    "Failed to restore server structure.",
+	BackupErrorSave:       "Failed to save backup record.",
+	BackupErrorList:       "Failed to list backups.",
+	BackupErrorDelete:     "Failed to delete backup.",
+	BackupConfirmRestore:  "Restore this backup? This will create missing channels, roles, and apply bans.",
+	BackupConfirmDelete:   "Delete this backup permanently?",
+	BackupNextRunFmt:      "Next scheduled backup: %s",
+	BackupManualLabel:     "Manual",
+	BackupScheduledLabel:  "Scheduled",
+	BackupAllLabel:        "All",
 }
 
 var cs = Translations{
@@ -310,6 +376,39 @@ var cs = Translations{
 	EmailSenderFallback: "Discord bot",
 	DefaultSubject:      "Ověřovací kód",
 	HTMLTitle:           "Ověření Discordem",
+
+	// Backup
+	BackupDesc:            "Zálohování a obnova struktury serveru",
+	BackupCreate:          "Vytvořit zálohu",
+	BackupRestore:         "Obnovit ze zálohy",
+	BackupList:            "Zobrazit zálohy",
+	BackupSchedule:        "Nastavit plánované zálohy",
+	BackupScheduleOff:     "Vypnout plánované zálohy",
+	BackupDelete:          "Smazat zálohu",
+	BackupScope:           "Rozsah zálohy",
+	BackupScopeSingle:     "Jeden server (aktuální guild)",
+	BackupScopeMulti:      "Více serverů (vyžaduje ID guildu)",
+	BackupGuildID:         "Cílové guild ID",
+	BackupFreq:            "Frekvence",
+	BackupTimeOfDay:       "Čas v den (HH:MM)",
+	BackupCreatedFmt:      "Záloha vytvořena: %s",
+	BackupRestoredFmt:     "Záloha obnovena: %s",
+	BackupNoBackups:       "Žádné zálohy neexistují.",
+	BackupDeletedFmt:      "Záloha smazána: %s",
+	BackupScheduledFmt:    "Plánované zálohy zapnuty: %s",
+	BackupScheduledOff:     "Plánované zálohy vypnuty.",
+	BackupScheduleDisabled: "Plánované zálohy jsou vypnuty.",
+	BackupErrorCapture:    "Selhalo načtení struktury serveru.",
+	BackupErrorRestore:    "Selhalo obnovení struktury serveru.",
+	BackupErrorSave:       "Selhalo uložení záznamu zálohy.",
+	BackupErrorList:       "Selhalo načtení seznamu záloh.",
+	BackupErrorDelete:     "Selhalo smazání zálohy.",
+	BackupConfirmRestore:  "Obnovit tuto zálohu? Vytvoří chybějící kanály, role a použije bany.",
+	BackupConfirmDelete:   "Trvale smazat tuto zálohu?",
+	BackupNextRunFmt:      "Další plánovaná záloha: %s",
+	BackupManualLabel:     "Manuální",
+	BackupScheduledLabel:  "Plánované",
+	BackupAllLabel:        "Vše",
 }
 
 var translations = map[Locale]Translations{
