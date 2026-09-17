@@ -262,12 +262,23 @@ func (s *Store) AddRegexRule(ctx context.Context, r RegexRule) error {
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO regex_rules (guild_id, pattern, role_id, priority) VALUES (?, ?, ?, ?)`,
 		r.GuildID, r.Pattern, r.RoleID, r.Priority)
-	return err
+	if err != nil {
+		return err
+	}
+	return s.ReorderRegexPriorities(ctx, r.GuildID)
 }
 
 func (s *Store) RemoveRegexRule(ctx context.Context, id int) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM regex_rules WHERE id = ?`, id)
-	return err
+	var guildID string
+	err := s.db.QueryRowContext(ctx, `SELECT guild_id FROM regex_rules WHERE id = ?`, id).Scan(&guildID)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `DELETE FROM regex_rules WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	return s.ReorderRegexPriorities(ctx, guildID)
 }
 
 func (s *Store) ListRegexRules(ctx context.Context, guildID string) ([]RegexRule, error) {
@@ -286,6 +297,73 @@ func (s *Store) ListRegexRules(ctx context.Context, guildID string) ([]RegexRule
 		out = append(out, r)
 	}
 	return out, nil
+}
+
+func (s *Store) RemoveAllRegexRules(ctx context.Context, guildID string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM regex_rules WHERE guild_id = ?`, guildID)
+	return err
+}
+
+func (s *Store) RemoveRegexRulesRange(ctx context.Context, guildID string, startID, endID int) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM regex_rules WHERE guild_id = ? AND id BETWEEN ? AND ?`, guildID, startID, endID)
+	if err != nil {
+		return err
+	}
+	return s.ReorderRegexPriorities(ctx, guildID)
+}
+
+func (s *Store) ReorderRegexPriorities(ctx context.Context, guildID string) error {
+	rules, err := s.ListRegexRules(ctx, guildID)
+	if err != nil {
+		return err
+	}
+	
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	
+	for i, rule := range rules {
+		newPriority := len(rules) - i
+		_, err = tx.ExecContext(ctx, `UPDATE regex_rules SET priority = ? WHERE id = ?`, newPriority, rule.ID)
+		if err != nil {
+			return err
+		}
+	}
+	
+	return tx.Commit()
+}
+
+func (s *Store) BulkInsertRegexRules(ctx context.Context, guildID string, rules []RegexRule) error {
+	if len(rules) == 0 {
+		return nil
+	}
+	
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	
+	stmt, err := tx.PrepareContext(ctx, `INSERT INTO regex_rules (guild_id, pattern, role_id, priority) VALUES (?, ?, ?, ?)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	
+	for _, rule := range rules {
+		_, err = stmt.ExecContext(ctx, rule.GuildID, rule.Pattern, rule.RoleID, rule.Priority)
+		if err != nil {
+			return err
+		}
+	}
+	
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	
+	return s.ReorderRegexPriorities(ctx, guildID)
 }
 
 // CSV Data

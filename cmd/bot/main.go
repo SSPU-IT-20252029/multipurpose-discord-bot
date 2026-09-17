@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -188,15 +189,38 @@ func (b *Bot) onReady(s *discordgo.Session, r *discordgo.Ready) {
 					Name:        "list",
 					Description: en.RegexList,
 				},
-				{
-					Type:        discordgo.ApplicationCommandOptionSubCommand,
-					Name:        "remove",
-					Description: en.RegexRemove,
-					Options: []*discordgo.ApplicationCommandOption{
-						{Type: discordgo.ApplicationCommandOptionInteger, Name: "id", Description: en.RegexID, Required: true},
-					},
+{
+				Type:        discordgo.ApplicationCommandOptionSubCommand,
+				Name:        "remove",
+				Description: en.RegexRemove,
+				Options: []*discordgo.ApplicationCommandOption{
+					{Type: discordgo.ApplicationCommandOptionInteger, Name: "id", Description: en.RegexID, Required: true},
 				},
 			},
+			{
+				Type:        discordgo.ApplicationCommandOptionSubCommand,
+				Name:        "remove-all",
+				Description: en.RegexRemoveAll,
+			},
+			{
+				Type:        discordgo.ApplicationCommandOptionSubCommand,
+				Name:        "remove-range",
+				Description: en.RegexRemoveRange,
+				Options: []*discordgo.ApplicationCommandOption{
+					{Type: discordgo.ApplicationCommandOptionInteger, Name: "start_id", Description: "Start rule ID", Required: true},
+					{Type: discordgo.ApplicationCommandOptionInteger, Name: "end_id", Description: "End rule ID", Required: true},
+				},
+			},
+			{
+				Type:        discordgo.ApplicationCommandOptionSubCommand,
+				Name:        "import",
+				Description: en.RegexImport,
+				Options: []*discordgo.ApplicationCommandOption{
+					{Type: discordgo.ApplicationCommandOptionAttachment, Name: "file", Description: en.RegexImportFile, Required: false},
+					{Type: discordgo.ApplicationCommandOptionString, Name: "text", Description: en.RegexImportDesc, Required: false},
+				},
+			},
+		},
 			DefaultMemberPermissions: func(i int64) *int64 { return &i }(discordgo.PermissionAdministrator),
 		},
 		{
@@ -455,6 +479,182 @@ func (b *Bot) cmdRegex(s *discordgo.Session, i *discordgo.InteractionCreate) {
 			return
 		}
 		respondOK(s, i, t.RuleDeleted)
+
+	case "remove-all":
+		rules, err := b.store.ListRegexRules(context.Background(), i.GuildID)
+		if err != nil {
+			respondErr(s, i, t.FailedLoadRules)
+			return
+		}
+		if len(rules) == 0 {
+			respondOK(s, i, t.NoRules)
+			return
+		}
+		
+		components := []discordgo.MessageComponent{
+			discordgo.ActionsRow{
+				Components: []discordgo.MessageComponent{
+					discordgo.Button{
+						CustomID: fmt.Sprintf("regex_confirm_remove_all:%s", i.GuildID),
+						Label:    "Confirm Delete All",
+						Style:    discordgo.DangerButton,
+					},
+					discordgo.Button{
+						CustomID: "regex_cancel",
+						Label:    "Cancel",
+						Style:    discordgo.SecondaryButton,
+					},
+				},
+			},
+		}
+		
+		err = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{
+				Content:    t.RegexConfirmAll,
+				Components: components,
+				Flags:      discordgo.MessageFlagsEphemeral,
+			},
+		})
+		if err != nil {
+			respondErr(s, i, t.FailedSave)
+		}
+
+	case "remove-range":
+		startID := int(subcmd.Options[0].IntValue())
+		endID := int(subcmd.Options[1].IntValue())
+		if startID > endID {
+			startID, endID = endID, startID
+		}
+		
+		rules, err := b.store.ListRegexRules(context.Background(), i.GuildID)
+		if err != nil {
+			respondErr(s, i, t.FailedLoadRules)
+			return
+		}
+		
+		// Check if any rules exist in range
+		hasRules := false
+		for _, r := range rules {
+			if r.ID >= startID && r.ID <= endID {
+				hasRules = true
+				break
+			}
+		}
+		
+		if !hasRules {
+			respondOK(s, i, "No rules found in the specified range.")
+			return
+		}
+		
+		components := []discordgo.MessageComponent{
+			discordgo.ActionsRow{
+				Components: []discordgo.MessageComponent{
+					discordgo.Button{
+						CustomID: fmt.Sprintf("regex_confirm_remove_range:%s:%d:%d", i.GuildID, startID, endID),
+						Label:    "Confirm Delete Range",
+						Style:    discordgo.DangerButton,
+					},
+					discordgo.Button{
+						CustomID: "regex_cancel",
+						Label:    "Cancel",
+						Style:    discordgo.SecondaryButton,
+					},
+				},
+			},
+		}
+		
+		err = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{
+				Content:    fmt.Sprintf(t.RegexConfirmRange+"\nRange: %d - %d", startID, endID),
+				Components: components,
+				Flags:      discordgo.MessageFlagsEphemeral,
+			},
+		})
+		if err != nil {
+			respondErr(s, i, t.FailedSave)
+		}
+
+	case "import":
+		var text string
+		var attachmentID string
+		for _, o := range subcmd.Options {
+			switch o.Name {
+			case "file":
+				attachmentID = o.StringValue()
+			case "text":
+				text = o.StringValue()
+			}
+		}
+		
+		if attachmentID == "" && text == "" {
+			respondErr(s, i, "Please provide either a file or text input.")
+			return
+		}
+		
+		if attachmentID != "" {
+			att := i.ApplicationCommandData().Resolved.Attachments[attachmentID]
+			resp, err := http.Get(att.URL)
+			if err != nil || resp.StatusCode != http.StatusOK {
+				respondErr(s, i, t.ErrorDownload)
+				return
+			}
+			defer resp.Body.Close()
+			
+			buf := new(strings.Builder)
+			_, err = io.Copy(buf, resp.Body)
+			if err != nil {
+				respondErr(s, i, "Failed to read file.")
+				return
+			}
+			text = buf.String()
+		}
+		
+		lines := strings.Split(text, "\n")
+		var rulesToImport []store.RegexRule
+		priority := len(lines) // Start with high priority
+		
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+			
+			// Parse CSV format: regex;role_id
+			parts := strings.Split(line, ";")
+			if len(parts) != 2 {
+				continue // Skip invalid lines
+			}
+			
+			pattern := strings.TrimSpace(parts[0])
+			roleID := strings.TrimSpace(parts[1])
+			
+			if pattern == "" || roleID == "" {
+				continue
+			}
+			
+			rulesToImport = append(rulesToImport, store.RegexRule{
+				GuildID:   i.GuildID,
+				Pattern:   pattern,
+				RoleID:    roleID,
+				Priority:  priority,
+			})
+			priority--
+		}
+		
+		if len(rulesToImport) == 0 {
+			respondOK(s, i, "No valid rules found in input.")
+			return
+		}
+		
+		err := b.store.BulkInsertRegexRules(context.Background(), i.GuildID, rulesToImport)
+		if err != nil {
+			respondErr(s, i, t.FailedSave)
+			return
+		}
+		
+		respondOK(s, i, fmt.Sprintf("Imported %d regex rules.", len(rulesToImport)))
 	}
 }
 
@@ -515,8 +715,10 @@ func (b *Bot) cmdCSV(s *discordgo.Session, i *discordgo.InteractionCreate) {
 
 func (b *Bot) handleComponent(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	t := i18n.Get(b.getLocale(i))
-	switch i.MessageComponentData().CustomID {
-	case "btn_verify_start":
+	customID := i.MessageComponentData().CustomID
+	
+	switch {
+	case customID == "btn_verify_start":
 		err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 			Type: discordgo.InteractionResponseModal,
 			Data: &discordgo.InteractionResponseData{
@@ -540,7 +742,7 @@ func (b *Bot) handleComponent(s *discordgo.Session, i *discordgo.InteractionCrea
 		if err != nil {
 			log.Println("Error sending modal:", err)
 		}
-	case "btn_enter_code":
+	case customID == "btn_enter_code":
 		err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 			Type: discordgo.InteractionResponseModal,
 			Data: &discordgo.InteractionResponseData{
@@ -565,6 +767,76 @@ func (b *Bot) handleComponent(s *discordgo.Session, i *discordgo.InteractionCrea
 		})
 		if err != nil {
 			log.Println("Error sending modal:", err)
+		}
+	case strings.HasPrefix(customID, "regex_confirm_remove_all:"):
+		guildID := strings.TrimPrefix(customID, "regex_confirm_remove_all:")
+		if guildID != i.GuildID {
+			respondErr(s, i, "Invalid guild.")
+			return
+		}
+		
+		err := b.store.RemoveAllRegexRules(context.Background(), guildID)
+		if err != nil {
+			respondErr(s, i, t.FailedDelete)
+			return
+		}
+		
+		err = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseUpdateMessage,
+			Data: &discordgo.InteractionResponseData{
+				Content:    "All regex rules have been deleted.",
+				Components: []discordgo.MessageComponent{},
+			},
+		})
+		if err != nil {
+			log.Println("Error updating message:", err)
+		}
+
+	case strings.HasPrefix(customID, "regex_confirm_remove_range:"):
+		parts := strings.Split(strings.TrimPrefix(customID, "regex_confirm_remove_range:"), ":")
+		if len(parts) != 3 {
+			respondErr(s, i, "Invalid range data.")
+			return
+		}
+		
+		guildID := parts[0]
+		if guildID != i.GuildID {
+			respondErr(s, i, "Invalid guild.")
+			return
+		}
+		
+		startID := 0
+		endID := 0
+		fmt.Sscanf(parts[1], "%d", &startID)
+		fmt.Sscanf(parts[2], "%d", &endID)
+		
+		err := b.store.RemoveRegexRulesRange(context.Background(), guildID, startID, endID)
+		if err != nil {
+			respondErr(s, i, t.FailedDelete)
+			return
+		}
+		
+		err = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseUpdateMessage,
+			Data: &discordgo.InteractionResponseData{
+				Content:    fmt.Sprintf("Rules in range %d - %d have been deleted.", startID, endID),
+				Components: []discordgo.MessageComponent{},
+			},
+		})
+		if err != nil {
+			log.Println("Error updating message:", err)
+		}
+
+	case customID == "regex_cancel":
+		err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseUpdateMessage,
+			Data: &discordgo.InteractionResponseData{
+				Content:    "Operation cancelled.",
+				Components: []discordgo.MessageComponent{},
+			},
+		})
+		if err != nil {
+			log.Println("Error updating message:", err)
 		}
 	}
 }

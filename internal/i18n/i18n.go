@@ -29,6 +29,13 @@ type Translations struct {
 	RegexAdd         string
 	RegexList        string
 	RegexRemove      string
+	RegexRemoveAll   string
+	RegexRemoveRange string
+	RegexImport      string
+	RegexConfirmAll  string
+	RegexConfirmRange string
+	RegexImportDesc  string
+	RegexImportFile  string
 	RegexPattern     string
 	RegexRole        string
 	RegexPriority    string
@@ -120,6 +127,13 @@ var en = Translations{
 	RegexAdd:         "Add a regex rule",
 	RegexList:        "List all rules",
 	RegexRemove:      "Remove a rule",
+	RegexRemoveAll:   "Remove all rules",
+	RegexRemoveRange: "Remove rules by range",
+	RegexImport:      "Import regex rules from text",
+	RegexConfirmAll:  "Are you sure you want to delete ALL rules? This cannot be undone.",
+	RegexConfirmRange: "Are you sure you want to delete rules in this range? This cannot be undone.",
+	RegexImportDesc:  "Paste rules in CSV format: `regex;role_id` (one per line, semicolon separated)",
+	RegexImportFile:  "Text file with rules",
 	RegexPattern:     "Regex pattern",
 	RegexRole:        "Target role",
 	RegexPriority:    "Priority (higher = more important)",
@@ -211,6 +225,13 @@ var cs = Translations{
 	RegexAdd:         "Přidat regex pravidlo",
 	RegexList:        "Zobrazit všechna pravidla",
 	RegexRemove:      "Odebrat pravidlo",
+	RegexRemoveAll:   "Odebrat všechna pravidla",
+	RegexRemoveRange: "Odebrat pravidla v rozsahu",
+	RegexImport:      "Importovat regex pravidla z textu",
+	RegexConfirmAll:  "Opravdu chcete smazat VŠECHNA pravidla? Nelze vrátit.",
+	RegexConfirmRange: "Opravdu chcete smazat pravidla v tomto rozsahu? Nelze vrátit.",
+	RegexImportDesc:  "Vložte pravidla ve CSV formátu: `regex;role_id` (na každý řádek jedno, odděleno středníkem)",
+	RegexImportFile:  "Textový soubor s pravidly",
 	RegexPattern:     "Regex vzor",
 	RegexRole:        "Cílová role",
 	RegexPriority:    "Priorita (vyšší = důležitější)",
