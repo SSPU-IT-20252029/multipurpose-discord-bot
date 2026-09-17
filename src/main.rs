@@ -53,9 +53,12 @@ async fn main() -> Result<(), Error> {
     // Graceful shutdown on SIGINT/SIGTERM (Go: signal.Notify → close session).
     let shard_manager = client.shard_manager.clone();
     tokio::spawn(async move {
-        if let Err(e) = tokio::signal::ctrl_c().await {
-            tracing::error!(%e, "failed to install ctrl-c handler");
-            return;
+        use tokio::signal::unix::{SignalKind, signal};
+        let mut term = signal(SignalKind::terminate()).expect("install SIGTERM handler");
+        let mut int = signal(SignalKind::interrupt()).expect("install SIGINT handler");
+        tokio::select! {
+            _ = term.recv() => tracing::info!("received SIGTERM"),
+            _ = int.recv() => tracing::info!("received SIGINT"),
         }
         tracing::info!("shutting down...");
         shard_manager.shutdown_all().await;
