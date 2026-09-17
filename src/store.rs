@@ -11,9 +11,26 @@ use std::sync::{Arc, Mutex};
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
     #[error("database error: {0}")]
-    Db(#[from] rusqlite::Error),
+    Db(rusqlite::Error),
+    #[error("foreign key violation — run /setup first")]
+    ForeignKey,
     #[error("i/o error: {0}")]
     Io(#[from] std::io::Error),
+}
+
+const SQLITE_CONSTRAINT_FOREIGNKEY: i32 = 787;
+
+impl From<rusqlite::Error> for StoreError {
+    fn from(e: rusqlite::Error) -> Self {
+        match &e {
+            rusqlite::Error::SqliteFailure(err, _)
+                if err.extended_code == SQLITE_CONSTRAINT_FOREIGNKEY =>
+            {
+                StoreError::ForeignKey
+            }
+            _ => StoreError::Db(e),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

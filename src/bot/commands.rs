@@ -8,12 +8,28 @@ use crate::bot::interactions::BTN_VERIFY_START;
 use crate::bot::{Bot, respond_err, respond_ok};
 use crate::error::Error;
 use crate::i18n;
-use crate::store::{BackupRecord, GuildConfig, ScheduledBackup};
+use crate::store::{BackupRecord, GuildConfig, ScheduledBackup, StoreError};
 use chrono::TimeZone;
 use poise::{ApplicationContext, CreateReply};
 use serenity::all::{
     self as serenity, ButtonStyle, CreateActionRow, CreateButton, CreateEmbed, CreateMessage,
 };
+
+/// Map a store error: ForeignKey (no guilds row) shows a clear "run /setup"
+/// message; other errors are logged and fall back to `failed_save`.
+async fn handle_store_err(
+    ctx: ApplicationContext<'_, Bot, Error>,
+    err: StoreError,
+    t: i18n::Translations,
+) -> Result<(), Error> {
+    match err {
+        StoreError::ForeignKey => respond_err(ctx, t.err_missing_config.to_string()).await,
+        other => {
+            tracing::error!(%other, "store operation failed");
+            respond_err(ctx, t.failed_save.to_string()).await
+        }
+    }
+}
 
 const NANOS_PER_SEC: i64 = 1_000_000_000;
 /// Defaults (Go `/setup`): code TTL 10 min, rate limit 3 / 15 min.
@@ -167,8 +183,7 @@ async fn add(
         &role.id.to_string(),
         priority.unwrap_or(0),
     ) {
-        tracing::error!(%e, "failed to add regex rule");
-        return respond_err(ctx, t.failed_save.to_string()).await;
+        return handle_store_err(ctx, e, t).await;
     }
     respond_ok(ctx, t.rule_added.to_string()).await
 }
@@ -271,8 +286,7 @@ async fn upload(
 
     let store = &ctx.data().store;
     if let Err(e) = store.clear_csv_emails(&guild_id) {
-        tracing::error!(%e, "failed to clear csv emails");
-        return respond_err(ctx, t.failed_save.to_string()).await;
+        return handle_store_err(ctx, e, t).await;
     }
     let mut count = 0i64;
     for row in &records {
@@ -281,8 +295,7 @@ async fn upload(
             let class = row[1].trim();
             if !email.is_empty() && !class.is_empty() {
                 if let Err(e) = store.insert_csv_email(&guild_id, email, class) {
-                    tracing::error!(%e, "failed to insert csv email");
-                    return respond_err(ctx, t.failed_save.to_string()).await;
+                    return handle_store_err(ctx, e, t).await;
                 }
                 count += 1;
             }
@@ -318,8 +331,7 @@ async fn map(
         .store
         .map_csv_class(&guild_id, &class, &role.id.to_string())
     {
-        tracing::error!(%e, "failed to map csv class");
-        return respond_err(ctx, t.failed_map.to_string()).await;
+        return handle_store_err(ctx, e, t).await;
     }
     respond_ok(
         ctx,
