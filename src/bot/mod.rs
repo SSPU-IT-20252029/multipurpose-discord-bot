@@ -7,6 +7,7 @@
 pub mod commands;
 pub mod interactions;
 
+use crate::backup::{self, BackupService};
 use crate::error::Error;
 use crate::i18n;
 use crate::mailer::Mailer;
@@ -21,6 +22,7 @@ pub struct Bot {
     pub store: Store,
     pub mailer: Mailer,
     pub verify: Arc<VerifyService<Mailer>>,
+    pub backup: Arc<BackupService>,
     pub debug: bool,
 }
 
@@ -58,6 +60,7 @@ pub fn build(
     mailer: Mailer,
     verify: VerifyService<Mailer>,
     debug: bool,
+    backup_dir: String,
 ) -> poise::Framework<Bot, Error> {
     let verify = Arc::new(verify);
     poise::Framework::builder()
@@ -70,6 +73,7 @@ pub fn build(
                 commands::ratelimit(),
                 commands::verifiedrole(),
                 commands::language(),
+                commands::backup(),
             ],
             on_error,
             event_handler,
@@ -85,10 +89,14 @@ pub fn build(
                     "logged in, {} global commands registered",
                     framework.options().commands.len()
                 );
+                let http = ctx.http.clone();
+                let backup = Arc::new(BackupService::new(backup_dir, store.clone(), http));
+                backup::spawn_scheduler(backup.clone());
                 Ok(Bot {
                     store,
                     mailer,
                     verify,
+                    backup,
                     debug,
                 })
             })
@@ -180,10 +188,13 @@ mod tests {
     fn test_bot(store: Store) -> Bot {
         let mailer = Mailer::new("re_key".into(), "bot@example.com".into());
         let verify = VerifyService::new(store.clone(), mailer.clone());
+        let http = Arc::new(serenity::Http::new("test-token"));
+        let backup = Arc::new(BackupService::new("./backups".into(), store.clone(), http));
         Bot {
             store,
             mailer,
             verify: Arc::new(verify),
+            backup,
             debug: false,
         }
     }

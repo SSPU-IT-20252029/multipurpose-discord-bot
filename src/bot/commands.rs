@@ -3,11 +3,13 @@
 //! Parity target: Go `cmd/bot/main.go` command handlers. Sessions 7–8 add
 //! `/ratelimit`, `/verifiedrole`, `/language`, and `/backup`.
 
+use crate::backup::BackupService;
 use crate::bot::interactions::BTN_VERIFY_START;
 use crate::bot::{Bot, respond_err, respond_ok};
 use crate::error::Error;
 use crate::i18n;
-use crate::store::GuildConfig;
+use crate::store::{BackupRecord, GuildConfig, ScheduledBackup};
+use chrono::TimeZone;
 use poise::{ApplicationContext, CreateReply};
 use serenity::all::{
     self as serenity, ButtonStyle, CreateActionRow, CreateButton, CreateEmbed, CreateMessage,
@@ -505,4 +507,265 @@ pub async fn language(
         i18n::Locale::Cs => "Čeština",
     };
     respond_ok(ctx, i18n::subst(t.language_set_fmt, &[lang_name])).await
+}
+
+/// `/backup` — backup and restore server structure.
+#[poise::command(
+    slash_command,
+    subcommands(
+        "create",
+        "restore",
+        "list_backups",
+        "schedule",
+        "schedule_off",
+        "delete"
+    ),
+    default_member_permissions = "ADMINISTRATOR"
+)]
+pub async fn backup(ctx: ApplicationContext<'_, Bot, Error>) -> Result<(), Error> {
+    let t = i18n::get(
+        ctx.data()
+            .locale(ctx.guild_id().map(|g| g.get()), ctx.author().id.get()),
+    );
+    respond_ok(ctx, t.backup_desc.to_string()).await
+}
+
+/// Create a backup snapshot of a guild.
+#[poise::command(slash_command)]
+async fn create(
+    ctx: ApplicationContext<'_, Bot, Error>,
+    #[choices("single", "multi")] scope: &'static str,
+    guild_id: Option<String>,
+) -> Result<(), Error> {
+    let t = i18n::get(
+        ctx.data()
+            .locale(ctx.guild_id().map(|g| g.get()), ctx.author().id.get()),
+    );
+    let guild = match guild_id {
+        Some(g) => g,
+        None => ctx.guild_id().map(|g| g.to_string()).unwrap_or_default(),
+    };
+    if scope == "multi" && guild.is_empty() {
+        return respond_err(ctx, t.backup_guild_id.to_string()).await;
+    }
+
+    let mut data = match ctx.data().backup.capture(&guild, scope).await {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::error!(%e, guild, "backup capture failed");
+            return respond_err(ctx, t.backup_error_capture.to_string()).await;
+        }
+    };
+    let assets_dir = format!(
+        "{}/assets/backup_{}",
+        ctx.data().backup.backup_dir,
+        crate::backup::unix_nanos()
+    );
+    if let Err(e) = ctx
+        .data()
+        .backup
+        .download_emoji_assets(&mut data, &assets_dir)
+        .await
+    {
+        tracing::warn!(%e, "backup emoji download failed");
+    }
+
+    let file_path = match ctx.data().backup.write_backup_file("backup", &guild, &data) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::error!(%e, "backup write failed");
+            return respond_err(ctx, t.backup_error_save.to_string()).await;
+        }
+    };
+    let record = BackupRecord {
+        id: 0,
+        guild_id: guild,
+        scope: scope.to_string(),
+        kind: "manual".into(),
+        filepath: file_path.clone(),
+        created_at: crate::backup::now_unix_secs(),
+        channel_count: data.channels.len() as i64,
+        role_count: data.roles.len() as i64,
+        emoji_count: data.emojis.len() as i64,
+        ban_count: data.bans.len() as i64,
+    };
+    if let Err(e) = ctx.data().store.save_backup(&record) {
+        tracing::error!(%e, "backup record save failed");
+        return respond_err(ctx, t.backup_error_save.to_string()).await;
+    }
+
+    respond_ok(
+        ctx,
+        i18n::subst(t.backup_created_fmt, &[file_path.as_str()]),
+    )
+    .await
+}
+
+/// Restore a guild structure from a stored backup.
+#[poise::command(slash_command)]
+async fn restore(
+    ctx: ApplicationContext<'_, Bot, Error>,
+    id: i64,
+    guild_id: Option<String>,
+) -> Result<(), Error> {
+    let t = i18n::get(
+        ctx.data()
+            .locale(ctx.guild_id().map(|g| g.get()), ctx.author().id.get()),
+    );
+    let target = match guild_id {
+        Some(g) => g,
+        None => ctx.guild_id().map(|g| g.to_string()).unwrap_or_default(),
+    };
+    let record = match ctx.data().store.get_backup(id) {
+        Ok(Some(r)) => r,
+        _ => return respond_err(ctx, t.backup_error_list.to_string()).await,
+    };
+    let data = match crate::backup::read_json(&record.filepath) {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::error!(%e, "backup read failed");
+            return respond_err(ctx, t.backup_error_restore.to_string()).await;
+        }
+    };
+    if let Err(e) = ctx.data().backup.restore(&data, &target).await {
+        tracing::error!(%e, "backup restore failed");
+        return respond_err(ctx, t.backup_error_restore.to_string()).await;
+    }
+
+    respond_ok(
+        ctx,
+        i18n::subst(t.backup_restored_fmt, &[record.filepath.as_str()]),
+    )
+    .await
+}
+
+/// List stored backups for this guild.
+///
+/// `rename` keeps the Discord subcommand name `list` while the Rust fn avoids
+/// clashing with the `/regex list` handler.
+#[poise::command(slash_command, rename = "list")]
+async fn list_backups(
+    ctx: ApplicationContext<'_, Bot, Error>,
+    #[choices("all", "manual", "scheduled")] kind: &'static str,
+) -> Result<(), Error> {
+    let t = i18n::get(
+        ctx.data()
+            .locale(ctx.guild_id().map(|g| g.get()), ctx.author().id.get()),
+    );
+    let guild_id = ctx.guild_id().map(|g| g.to_string()).unwrap_or_default();
+    let kind_opt = if kind == "all" { None } else { Some(kind) };
+    let records = match ctx.data().store.list_backups(Some(&guild_id), kind_opt) {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!(%e, "backup list failed");
+            return respond_err(ctx, t.backup_error_list.to_string()).await;
+        }
+    };
+    if records.is_empty() {
+        return respond_ok(ctx, t.backup_no_backups.to_string()).await;
+    }
+    let mut msg = String::new();
+    for r in records {
+        msg.push_str(&format!(
+            "ID: {} | {} | {} | {} | {} channels, {} roles, {} emojis, {} bans\n",
+            r.id,
+            r.kind,
+            r.scope,
+            format_ts(r.created_at),
+            r.channel_count,
+            r.role_count,
+            r.emoji_count,
+            r.ban_count
+        ));
+    }
+    respond_ok(ctx, msg).await
+}
+
+/// Enable scheduled backups.
+#[poise::command(slash_command)]
+async fn schedule(
+    ctx: ApplicationContext<'_, Bot, Error>,
+    #[choices("12h", "daily", "weekly", "biweekly", "monthly", "3months", "6months")]
+    frequency: &'static str,
+    time: Option<String>,
+) -> Result<(), Error> {
+    let t = i18n::get(
+        ctx.data()
+            .locale(ctx.guild_id().map(|g| g.get()), ctx.author().id.get()),
+    );
+    let guild_id = match ctx.guild_id() {
+        Some(g) => g.to_string(),
+        None => return respond_err(ctx, t.failed_save.to_string()).await,
+    };
+    let cfg = ScheduledBackup {
+        guild_id,
+        enabled: true,
+        frequency: frequency.to_string(),
+        time_of_day: time.unwrap_or_default(),
+        next_run: crate::backup::now_unix_secs() + BackupService::frequency_interval(frequency),
+        slot_count: 3,
+    };
+    if let Err(e) = ctx.data().store.save_scheduled_config(&cfg) {
+        tracing::error!(%e, "schedule save failed");
+        return respond_err(ctx, t.backup_error_save.to_string()).await;
+    }
+    respond_ok(ctx, i18n::subst(t.backup_scheduled_fmt, &[frequency])).await
+}
+
+/// Disable scheduled backups.
+#[poise::command(slash_command)]
+async fn schedule_off(ctx: ApplicationContext<'_, Bot, Error>) -> Result<(), Error> {
+    let t = i18n::get(
+        ctx.data()
+            .locale(ctx.guild_id().map(|g| g.get()), ctx.author().id.get()),
+    );
+    let guild_id = match ctx.guild_id() {
+        Some(g) => g.to_string(),
+        None => return respond_err(ctx, t.failed_save.to_string()).await,
+    };
+    let cfg = ScheduledBackup {
+        guild_id,
+        enabled: false,
+        frequency: String::new(),
+        time_of_day: String::new(),
+        next_run: 0,
+        slot_count: 3,
+    };
+    if let Err(e) = ctx.data().store.save_scheduled_config(&cfg) {
+        tracing::error!(%e, "schedule off save failed");
+        return respond_err(ctx, t.backup_error_save.to_string()).await;
+    }
+    respond_ok(ctx, t.backup_scheduled_off.to_string()).await
+}
+
+/// Delete a stored backup (file + record).
+#[poise::command(slash_command)]
+async fn delete(ctx: ApplicationContext<'_, Bot, Error>, id: i64) -> Result<(), Error> {
+    let t = i18n::get(
+        ctx.data()
+            .locale(ctx.guild_id().map(|g| g.get()), ctx.author().id.get()),
+    );
+    let record = match ctx.data().store.get_backup(id) {
+        Ok(Some(r)) => r,
+        _ => return respond_err(ctx, t.backup_error_delete.to_string()).await,
+    };
+    let _ = std::fs::remove_file(&record.filepath);
+    if let Err(e) = ctx.data().store.delete_backup(id) {
+        tracing::error!(%e, "backup delete failed");
+        return respond_err(ctx, t.backup_error_delete.to_string()).await;
+    }
+    respond_ok(
+        ctx,
+        i18n::subst(t.backup_deleted_fmt, &[record.filepath.as_str()]),
+    )
+    .await
+}
+
+/// Format a unix timestamp as `YYYY-MM-DD HH:MM` UTC (Go `2006-01-02 15:04`).
+fn format_ts(ts: i64) -> String {
+    chrono::Utc
+        .timestamp_opt(ts, 0)
+        .single()
+        .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
+        .unwrap_or_default()
 }

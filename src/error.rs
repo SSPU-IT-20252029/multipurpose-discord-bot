@@ -1,3 +1,4 @@
+use crate::backup::BackupError;
 use crate::store::StoreError;
 use crate::verify::VerifyError;
 use thiserror::Error;
@@ -17,6 +18,9 @@ pub enum Error {
 
     #[error("verification error: {0}")]
     Verify(#[from] VerifyError),
+
+    #[error("backup error: {0}")]
+    Backup(Box<BackupError>),
 
     #[error("discord error: {0}")]
     Discord(Box<serenity::Error>),
@@ -43,6 +47,12 @@ impl From<serenity::Error> for Error {
 impl From<serde_yaml::Error> for Error {
     fn from(e: serde_yaml::Error) -> Self {
         Self::Yaml(Box::new(e))
+    }
+}
+
+impl From<BackupError> for Error {
+    fn from(e: BackupError) -> Self {
+        Self::Backup(Box::new(e))
     }
 }
 

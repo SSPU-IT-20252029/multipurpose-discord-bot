@@ -43,7 +43,8 @@ async fn main() -> Result<(), Error> {
     let verify = verify::VerifyService::new(store.clone(), mailer.clone());
 
     let token = cfg.discord.token.clone();
-    let framework = bot::build(store, mailer, verify, cli.debug);
+    let backup_dir = cfg.storage.backup_dir.clone();
+    let framework = bot::build(store, mailer, verify, cli.debug, backup_dir);
 
     let mut client = Client::builder(token, bot::intents())
         .framework(framework)
