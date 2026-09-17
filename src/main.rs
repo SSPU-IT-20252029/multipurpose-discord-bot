@@ -1,6 +1,7 @@
 //! Binary entry point.
 //!
-//! Parity target: Go `cmd/bot/main.go` (flags, bootstrap, signal shutdown).
+//! Secrets (`DISCORD_TOKEN`, `RESEND_API_KEY`, `EMAIL_FROM`) are loaded from
+//! `.env` via `dotenvy` at startup.
 
 use clap::Parser;
 use multipurpose_discord_bot::{bot, config, error::Error, mailer, store, verify};
@@ -35,18 +36,26 @@ async fn main() -> Result<(), Error> {
     let cli = Cli::parse();
     init_logging(cli.debug);
 
+    // Load secrets from .env before anything else.
+    dotenvy::dotenv().ok();
+    let discord_token = std::env::var("DISCORD_TOKEN")
+        .map_err(|_| Error::Message("DISCORD_TOKEN not set".into()))?;
+    let resend_api_key = std::env::var("RESEND_API_KEY")
+        .map_err(|_| Error::Message("RESEND_API_KEY not set".into()))?;
+    let email_from = std::env::var("EMAIL_FROM")
+        .unwrap_or_else(|_| "Discord bot <discord-bot@yourdomain.com>".into());
+
     let cfg = config::Config::load(&cli.config)?;
     tracing::info!(config = %cli.config, "loaded configuration");
 
     let store = store::Store::open(&cfg.storage.dsn)?;
-    let mailer = mailer::Mailer::new(cfg.email.api_key.clone(), cfg.email.from.clone());
+    let mailer = mailer::Mailer::new(resend_api_key, email_from);
     let verify = verify::VerifyService::new(store.clone(), mailer.clone());
 
-    let token = cfg.discord.token.clone();
     let backup_dir = cfg.storage.backup_dir.clone();
     let framework = bot::build(store, mailer, verify, cli.debug, backup_dir);
 
-    let mut client = Client::builder(token, bot::intents())
+    let mut client = Client::builder(discord_token, bot::intents())
         .framework(framework)
         .await?;
 

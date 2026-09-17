@@ -56,12 +56,9 @@ impl From<BackupError> for Error {
     }
 }
 
-/// Configuration loading/validation errors.
+/// Configuration loader errors (storage paths only — secrets come from .env).
 #[derive(Debug, Error)]
 pub enum ConfigError {
-    #[error("missing required configuration field: {0}")]
-    Missing(&'static str),
-
     #[error("i/o error reading configuration: {0}")]
     Io(#[from] std::io::Error),
 
