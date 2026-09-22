@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  discord-bot:
+    build:
+      context: ../../
+      dockerfile: deploy/docker/Dockerfile
+    container_name: sspu-email-bot
+    restart: unless-stopped
+    volumes:
+      - ../../data:/app/data
+      - ../config.yml:/app/config.yml:ro
+    env_file:
+      - ../.env

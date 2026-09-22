@@ -1,0 +1,7 @@
+config.yml
+data/
+/bot
+*.db
+*.db-shm
+*.db-wal
+.env
