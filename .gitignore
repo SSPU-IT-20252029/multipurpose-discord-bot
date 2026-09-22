@@ -1,7 +1,12 @@
 config.yml
 data/
-/bot
+bot.exe
 *.db
 *.db-shm
 *.db-wal
 .env
+
+
+yagpdb/
+redbot/
+.kilo/
