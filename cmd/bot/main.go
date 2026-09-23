@@ -33,6 +33,83 @@ func ptrBool(b bool) *bool {
 var configPath = flag.String("config", "config.yml", "Path to configuration file")
 var debugMode = flag.Bool("debug", false, "Enable debug logging")
 
+func getOptionByName(options []*discordgo.ApplicationCommandInteractionDataOption, name string) *discordgo.ApplicationCommandInteractionDataOption {
+	for _, option := range options {
+		if option != nil && option.Name == name {
+			return option
+		}
+	}
+	return nil
+}
+
+func getStringOption(options []*discordgo.ApplicationCommandInteractionDataOption, name string) (string, bool) {
+	option := getOptionByName(options, name)
+	if option == nil || option.Type != discordgo.ApplicationCommandOptionString || option.Value == nil {
+		return "", false
+	}
+	value, ok := option.Value.(string)
+	if !ok {
+		return "", false
+	}
+	return value, true
+}
+
+func getIntOption(options []*discordgo.ApplicationCommandInteractionDataOption, name string) (int64, bool) {
+	option := getOptionByName(options, name)
+	if option == nil || option.Type != discordgo.ApplicationCommandOptionInteger || option.Value == nil {
+		return 0, false
+	}
+	value, ok := option.Value.(float64)
+	if !ok {
+		return 0, false
+	}
+	return int64(value), true
+}
+
+func getRoleOption(options []*discordgo.ApplicationCommandInteractionDataOption, name string) (*discordgo.Role, bool) {
+	option := getOptionByName(options, name)
+	if option == nil || option.Type != discordgo.ApplicationCommandOptionRole || option.Value == nil {
+		return nil, false
+	}
+	if _, ok := option.Value.(string); !ok {
+		return nil, false
+	}
+	return option.RoleValue(nil, ""), true
+}
+
+func getAttachmentOption(options []*discordgo.ApplicationCommandInteractionDataOption, name string) (string, bool) {
+	option := getOptionByName(options, name)
+	if option == nil || option.Type != discordgo.ApplicationCommandOptionAttachment || option.Value == nil {
+		return "", false
+	}
+	value, ok := option.Value.(string)
+	if !ok {
+		return "", false
+	}
+	return value, true
+}
+
+func getChannelOption(options []*discordgo.ApplicationCommandInteractionDataOption, name string) (string, bool) {
+	option := getOptionByName(options, name)
+	if option == nil || option.Type != discordgo.ApplicationCommandOptionChannel || option.Value == nil {
+		return "", false
+	}
+	value, ok := option.Value.(string)
+	if !ok {
+		return "", false
+	}
+	return value, true
+}
+
+func getSubCommandOption(options []*discordgo.ApplicationCommandInteractionDataOption) (*discordgo.ApplicationCommandInteractionDataOption, bool) {
+	for _, option := range options {
+		if option.Type == discordgo.ApplicationCommandOptionSubCommand {
+			return option, true
+		}
+	}
+	return nil, false
+}
+
 type Bot struct {
 	session *discordgo.Session
 	store   *store.Store
@@ -205,38 +282,38 @@ func (b *Bot) onReady(s *discordgo.Session, r *discordgo.Ready) {
 					Name:        "list",
 					Description: en.RegexList,
 				},
-{
-				Type:        discordgo.ApplicationCommandOptionSubCommand,
-				Name:        "remove",
-				Description: en.RegexRemove,
-				Options: []*discordgo.ApplicationCommandOption{
-					{Type: discordgo.ApplicationCommandOptionInteger, Name: "id", Description: en.RegexID, Required: true},
+				{
+					Type:        discordgo.ApplicationCommandOptionSubCommand,
+					Name:        "remove",
+					Description: en.RegexRemove,
+					Options: []*discordgo.ApplicationCommandOption{
+						{Type: discordgo.ApplicationCommandOptionInteger, Name: "id", Description: en.RegexID, Required: true},
+					},
+				},
+				{
+					Type:        discordgo.ApplicationCommandOptionSubCommand,
+					Name:        "remove-all",
+					Description: en.RegexRemoveAll,
+				},
+				{
+					Type:        discordgo.ApplicationCommandOptionSubCommand,
+					Name:        "remove-range",
+					Description: en.RegexRemoveRange,
+					Options: []*discordgo.ApplicationCommandOption{
+						{Type: discordgo.ApplicationCommandOptionInteger, Name: "start_id", Description: "Start rule ID", Required: true},
+						{Type: discordgo.ApplicationCommandOptionInteger, Name: "end_id", Description: "End rule ID", Required: true},
+					},
+				},
+				{
+					Type:        discordgo.ApplicationCommandOptionSubCommand,
+					Name:        "import",
+					Description: en.RegexImport,
+					Options: []*discordgo.ApplicationCommandOption{
+						{Type: discordgo.ApplicationCommandOptionAttachment, Name: "file", Description: en.RegexImportFile, Required: false},
+						{Type: discordgo.ApplicationCommandOptionString, Name: "text", Description: en.RegexImportDesc, Required: false},
+					},
 				},
 			},
-			{
-				Type:        discordgo.ApplicationCommandOptionSubCommand,
-				Name:        "remove-all",
-				Description: en.RegexRemoveAll,
-			},
-			{
-				Type:        discordgo.ApplicationCommandOptionSubCommand,
-				Name:        "remove-range",
-				Description: en.RegexRemoveRange,
-				Options: []*discordgo.ApplicationCommandOption{
-					{Type: discordgo.ApplicationCommandOptionInteger, Name: "start_id", Description: "Start rule ID", Required: true},
-					{Type: discordgo.ApplicationCommandOptionInteger, Name: "end_id", Description: "End rule ID", Required: true},
-				},
-			},
-			{
-				Type:        discordgo.ApplicationCommandOptionSubCommand,
-				Name:        "import",
-				Description: en.RegexImport,
-				Options: []*discordgo.ApplicationCommandOption{
-					{Type: discordgo.ApplicationCommandOptionAttachment, Name: "file", Description: en.RegexImportFile, Required: false},
-					{Type: discordgo.ApplicationCommandOptionString, Name: "text", Description: en.RegexImportDesc, Required: false},
-				},
-			},
-		},
 			DefaultMemberPermissions: func(i int64) *int64 { return &i }(discordgo.PermissionAdministrator),
 		},
 		{
@@ -495,31 +572,28 @@ func (b *Bot) handleSlashCommand(s *discordgo.Session, i *discordgo.InteractionC
 func (b *Bot) cmdSetup(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	t := i18n.Get(b.getLocale(i))
 	opts := i.ApplicationCommandData().Options
-	var domain, mode, channelID, subject string
-	subject = t.DefaultSubject
-	for _, o := range opts {
-		switch o.Name {
-		case "domain":
-			domain = o.StringValue()
-		case "mode":
-			mode = o.StringValue()
-		case "channel":
-			channelID = o.ChannelValue(nil).ID
-		case "subject":
-			subject = o.StringValue()
-		}
+	domain, domainOK := getStringOption(opts, "domain")
+	mode, modeOK := getStringOption(opts, "mode")
+	channelID, channelOK := getChannelOption(opts, "channel")
+	subject, _ := getStringOption(opts, "subject")
+	if !domainOK || !modeOK || !channelOK {
+		respondErr(s, i, "Missing required argument.")
+		return
+	}
+	if subject == "" {
+		subject = t.DefaultSubject
 	}
 
 	cfg := store.GuildConfig{
-		GuildID:          i.GuildID,
-		VerifyChannelID:  channelID,
-		Domain:           domain,
-		Mode:             mode,
-		Subject:          subject,
-		CodeTTL:          10 * time.Minute,
-		MaxAttempts:      5,
-		RateLimitCount:   3,
-		RateLimitWindow:  15 * time.Minute,
+		GuildID:         i.GuildID,
+		VerifyChannelID: channelID,
+		Domain:          domain,
+		Mode:            mode,
+		Subject:         subject,
+		CodeTTL:         10 * time.Minute,
+		MaxAttempts:     5,
+		RateLimitCount:  3,
+		RateLimitWindow: 15 * time.Minute,
 	}
 
 	if existing, ok, err := b.store.GetGuildConfig(context.Background(), i.GuildID); err == nil && ok {
@@ -560,26 +634,25 @@ func (b *Bot) cmdSetup(s *discordgo.Session, i *discordgo.InteractionCreate) {
 
 func (b *Bot) cmdRegex(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	t := i18n.Get(b.getLocale(i))
-	subcmd := i.ApplicationCommandData().Options[0]
+	subcmd, ok := getSubCommandOption(i.ApplicationCommandData().Options)
+	if !ok {
+		respondErr(s, i, "Missing subcommand.")
+		return
+	}
 	switch subcmd.Name {
 	case "add":
-		var pattern, roleID string
-		priority := 0
-		for _, o := range subcmd.Options {
-			switch o.Name {
-			case "pattern":
-				pattern = o.StringValue()
-			case "role":
-				roleID = o.RoleValue(nil, "").ID
-			case "priority":
-				priority = int(o.IntValue())
-			}
+		pattern, patternOK := getStringOption(subcmd.Options, "pattern")
+		role, roleOK := getRoleOption(subcmd.Options, "role")
+		priority, _ := getIntOption(subcmd.Options, "priority")
+		if !patternOK || !roleOK {
+			respondErr(s, i, "Missing required argument.")
+			return
 		}
 		err := b.store.AddRegexRule(context.Background(), store.RegexRule{
-			GuildID:    i.GuildID,
-			Pattern:    pattern,
-			RoleID:     roleID,
-			Priority:   priority,
+			GuildID:  i.GuildID,
+			Pattern:  pattern,
+			RoleID:   role.ID,
+			Priority: int(priority),
 		})
 		if err != nil {
 			respondErr(s, i, t.FailedSave)
@@ -604,8 +677,12 @@ func (b *Bot) cmdRegex(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		respondOK(s, i, msg.String())
 
 	case "remove":
-		id := int(subcmd.Options[0].IntValue())
-		if err := b.store.RemoveRegexRule(context.Background(), id); err != nil {
+		idValue, ok := getIntOption(subcmd.Options, "id")
+		if !ok {
+			respondErr(s, i, "Missing required argument.")
+			return
+		}
+		if err := b.store.RemoveRegexRule(context.Background(), int(idValue)); err != nil {
 			respondErr(s, i, t.FailedDelete)
 			return
 		}
@@ -621,7 +698,7 @@ func (b *Bot) cmdRegex(s *discordgo.Session, i *discordgo.InteractionCreate) {
 			respondOK(s, i, t.NoRules)
 			return
 		}
-		
+
 		components := []discordgo.MessageComponent{
 			discordgo.ActionsRow{
 				Components: []discordgo.MessageComponent{
@@ -638,7 +715,7 @@ func (b *Bot) cmdRegex(s *discordgo.Session, i *discordgo.InteractionCreate) {
 				},
 			},
 		}
-		
+
 		err = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 			Type: discordgo.InteractionResponseChannelMessageWithSource,
 			Data: &discordgo.InteractionResponseData{
@@ -652,18 +729,24 @@ func (b *Bot) cmdRegex(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		}
 
 	case "remove-range":
-		startID := int(subcmd.Options[0].IntValue())
-		endID := int(subcmd.Options[1].IntValue())
+		startValue, startOK := getIntOption(subcmd.Options, "start_id")
+		endValue, endOK := getIntOption(subcmd.Options, "end_id")
+		if !startOK || !endOK {
+			respondErr(s, i, "Missing required argument.")
+			return
+		}
+		startID := int(startValue)
+		endID := int(endValue)
 		if startID > endID {
 			startID, endID = endID, startID
 		}
-		
+
 		rules, err := b.store.ListRegexRules(context.Background(), i.GuildID)
 		if err != nil {
 			respondErr(s, i, t.FailedLoadRules)
 			return
 		}
-		
+
 		// Check if any rules exist in range
 		hasRules := false
 		for _, r := range rules {
@@ -672,12 +755,12 @@ func (b *Bot) cmdRegex(s *discordgo.Session, i *discordgo.InteractionCreate) {
 				break
 			}
 		}
-		
+
 		if !hasRules {
 			respondOK(s, i, "No rules found in the specified range.")
 			return
 		}
-		
+
 		components := []discordgo.MessageComponent{
 			discordgo.ActionsRow{
 				Components: []discordgo.MessageComponent{
@@ -694,7 +777,7 @@ func (b *Bot) cmdRegex(s *discordgo.Session, i *discordgo.InteractionCreate) {
 				},
 			},
 		}
-		
+
 		err = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 			Type: discordgo.InteractionResponseChannelMessageWithSource,
 			Data: &discordgo.InteractionResponseData{
@@ -708,34 +791,26 @@ func (b *Bot) cmdRegex(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		}
 
 	case "import":
-		var text string
-		var attachmentID string
-		for _, o := range subcmd.Options {
-			switch o.Name {
-			case "file":
-				// Attachment option value is the attachment ID
-				if o.Value != nil {
-					attachmentID = fmt.Sprintf("%v", o.Value)
-				}
-			case "text":
-				text = o.StringValue()
-			}
-		}
-		
-		if attachmentID == "" && text == "" {
+		text, textOK := getStringOption(subcmd.Options, "text")
+		attachmentID, fileOK := getAttachmentOption(subcmd.Options, "file")
+		if !fileOK && !textOK {
 			respondErr(s, i, "Please provide either a file or text input.")
 			return
 		}
-		
-		if attachmentID != "" {
-			att := i.ApplicationCommandData().Resolved.Attachments[attachmentID]
+
+		if fileOK {
+			att, ok := i.ApplicationCommandData().Resolved.Attachments[attachmentID]
+			if !ok || att == nil || att.URL == "" {
+				respondErr(s, i, t.ErrorDownload)
+				return
+			}
 			resp, err := http.Get(att.URL)
 			if err != nil || resp.StatusCode != http.StatusOK {
 				respondErr(s, i, t.ErrorDownload)
 				return
 			}
 			defer resp.Body.Close()
-			
+
 			buf := new(strings.Builder)
 			_, err = io.Copy(buf, resp.Body)
 			if err != nil {
@@ -744,61 +819,73 @@ func (b *Bot) cmdRegex(s *discordgo.Session, i *discordgo.InteractionCreate) {
 			}
 			text = buf.String()
 		}
-		
+
 		lines := strings.Split(text, "\n")
 		var rulesToImport []store.RegexRule
 		priority := len(lines) // Start with high priority
-		
+
 		for _, line := range lines {
 			line = strings.TrimSpace(line)
 			if line == "" || strings.HasPrefix(line, "#") {
 				continue
 			}
-			
+
 			// Parse CSV format: regex;role_id
 			parts := strings.Split(line, ";")
 			if len(parts) != 2 {
 				continue // Skip invalid lines
 			}
-			
+
 			pattern := strings.TrimSpace(parts[0])
 			roleID := strings.TrimSpace(parts[1])
-			
+
 			if pattern == "" || roleID == "" {
 				continue
 			}
-			
+
 			rulesToImport = append(rulesToImport, store.RegexRule{
-				GuildID:   i.GuildID,
-				Pattern:   pattern,
-				RoleID:    roleID,
-				Priority:  priority,
+				GuildID:  i.GuildID,
+				Pattern:  pattern,
+				RoleID:   roleID,
+				Priority: priority,
 			})
 			priority--
 		}
-		
+
 		if len(rulesToImport) == 0 {
 			respondOK(s, i, "No valid rules found in input.")
 			return
 		}
-		
+
 		err := b.store.BulkInsertRegexRules(context.Background(), i.GuildID, rulesToImport)
 		if err != nil {
 			respondErr(s, i, t.FailedSave)
 			return
 		}
-		
+
 		respondOK(s, i, fmt.Sprintf("Imported %d regex rules.", len(rulesToImport)))
 	}
 }
 
 func (b *Bot) cmdCSV(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	t := i18n.Get(b.getLocale(i))
-	subcmd := i.ApplicationCommandData().Options[0]
+	subcmd, ok := getSubCommandOption(i.ApplicationCommandData().Options)
+	if !ok {
+		respondErr(s, i, "Missing subcommand.")
+		return
+	}
 	switch subcmd.Name {
 	case "upload":
-		attID := subcmd.Options[0].Value.(string)
-		att := i.ApplicationCommandData().Resolved.Attachments[attID]
+		attachmentID, ok := getAttachmentOption(subcmd.Options, "file")
+		if !ok {
+			respondErr(s, i, "Missing required argument.")
+			return
+		}
+		att, ok := i.ApplicationCommandData().Resolved.Attachments[attachmentID]
+		if !ok || att == nil || att.URL == "" {
+			respondErr(s, i, t.ErrorDownload)
+			return
+		}
 
 		resp, err := http.Get(att.URL)
 		if err != nil || resp.StatusCode != http.StatusOK {
@@ -830,27 +917,25 @@ func (b *Bot) cmdCSV(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		respondOK(s, i, fmt.Sprintf(t.UploadedEmailsFmt, count))
 
 	case "map":
-		var class, roleID string
-		for _, o := range subcmd.Options {
-			if o.Name == "class" {
-				class = o.StringValue()
-			} else if o.Name == "role" {
-				roleID = o.RoleValue(nil, "").ID
-			}
+		class, classOK := getStringOption(subcmd.Options, "class")
+		role, roleOK := getRoleOption(subcmd.Options, "role")
+		if !classOK || !roleOK {
+			respondErr(s, i, "Missing required argument.")
+			return
 		}
-		err := b.store.MapCSVClass(context.Background(), i.GuildID, class, roleID)
+		err := b.store.MapCSVClass(context.Background(), i.GuildID, class, role.ID)
 		if err != nil {
 			respondErr(s, i, t.FailedMap)
 			return
 		}
-		respondOK(s, i, fmt.Sprintf(t.ClassMappedFmt, class, roleID))
+		respondOK(s, i, fmt.Sprintf(t.ClassMappedFmt, class, role.ID))
 	}
 }
 
 func (b *Bot) handleComponent(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	t := i18n.Get(b.getLocale(i))
 	customID := i.MessageComponentData().CustomID
-	
+
 	switch {
 	case customID == "btn_verify_start":
 		err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
@@ -908,13 +993,13 @@ func (b *Bot) handleComponent(s *discordgo.Session, i *discordgo.InteractionCrea
 			respondErr(s, i, "Invalid guild.")
 			return
 		}
-		
+
 		err := b.store.RemoveAllRegexRules(context.Background(), guildID)
 		if err != nil {
 			respondErr(s, i, t.FailedDelete)
 			return
 		}
-		
+
 		err = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 			Type: discordgo.InteractionResponseUpdateMessage,
 			Data: &discordgo.InteractionResponseData{
@@ -932,24 +1017,24 @@ func (b *Bot) handleComponent(s *discordgo.Session, i *discordgo.InteractionCrea
 			respondErr(s, i, "Invalid range data.")
 			return
 		}
-		
+
 		guildID := parts[0]
 		if guildID != i.GuildID {
 			respondErr(s, i, "Invalid guild.")
 			return
 		}
-		
+
 		startID := 0
 		endID := 0
 		fmt.Sscanf(parts[1], "%d", &startID)
 		fmt.Sscanf(parts[2], "%d", &endID)
-		
+
 		err := b.store.RemoveRegexRulesRange(context.Background(), guildID, startID, endID)
 		if err != nil {
 			respondErr(s, i, t.FailedDelete)
 			return
 		}
-		
+
 		err = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 			Type: discordgo.InteractionResponseUpdateMessage,
 			Data: &discordgo.InteractionResponseData{
@@ -1063,11 +1148,10 @@ func (b *Bot) handleModal(s *discordgo.Session, i *discordgo.InteractionCreate) 
 
 func (b *Bot) cmdLanguage(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	t := i18n.Get(b.getLocale(i))
-	var localeStr string
-	for _, o := range i.ApplicationCommandData().Options {
-		if o.Name == "language" {
-			localeStr = o.StringValue()
-		}
+	localeStr, ok := getStringOption(i.ApplicationCommandData().Options, "language")
+	if !ok {
+		respondErr(s, i, "Missing required argument.")
+		return
 	}
 	locale := i18n.ParseLocale(localeStr)
 	if err := b.store.SetUserLocale(context.Background(), i.GuildID, i.Member.User.ID, string(locale)); err != nil {
@@ -1085,14 +1169,11 @@ func (b *Bot) cmdLanguage(s *discordgo.Session, i *discordgo.InteractionCreate) 
 
 func (b *Bot) cmdRateLimit(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	t := i18n.Get(b.getLocale(i))
-	var count int64 = 3
-	var window int64 = 30
-	for _, o := range i.ApplicationCommandData().Options {
-		if o.Name == "count" {
-			count = o.IntValue()
-		} else if o.Name == "window" {
-			window = o.IntValue()
-		}
+	count, countOK := getIntOption(i.ApplicationCommandData().Options, "count")
+	window, windowOK := getIntOption(i.ApplicationCommandData().Options, "window")
+	if !countOK || !windowOK {
+		respondErr(s, i, "Missing required argument.")
+		return
 	}
 
 	if count < 1 || count > 3 || window < 15 || window > 60 {
@@ -1122,43 +1203,56 @@ func (b *Bot) cmdRateLimit(s *discordgo.Session, i *discordgo.InteractionCreate)
 }
 
 func (b *Bot) cmdVerifiedRole(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	t := i18n.Get(b.getLocale(i))
-	subcmd := i.ApplicationCommandData().Options[0]
+	subcmd, ok := getSubCommandOption(i.ApplicationCommandData().Options)
+	if !ok {
+		respondErr(s, i, "Missing subcommand.")
+		return
+	}
 
 	ctx := context.Background()
-	cfg, ok, err := b.store.GetGuildConfig(ctx, i.GuildID)
-	if err != nil {
-		respondErr(s, i, t.FailedSave)
-		return
-	}
-	if !ok {
-		respondErr(s, i, i18n.Get(i18n.LocaleEN).ErrMissingConfig)
-		return
-	}
-
 	switch subcmd.Name {
 	case "set":
-		var roleID string
-		for _, o := range subcmd.Options {
-			if o.Name == "role" {
-				roleID = o.RoleValue(nil, "").ID
-			}
+		role, ok := getRoleOption(subcmd.Options, "role")
+		if !ok {
+			respondErr(s, i, "Missing required argument.")
+			return
 		}
-		cfg.DefaultRoleID = roleID
+		t := i18n.Get(b.getLocale(i))
+		cfg, ok, err := b.store.GetGuildConfig(ctx, i.GuildID)
+		if err != nil {
+			respondErr(s, i, t.FailedSave)
+			return
+		}
+		if !ok {
+			respondErr(s, i, i18n.Get(i18n.LocaleEN).ErrMissingConfig)
+			return
+		}
+		cfg.DefaultRoleID = role.ID
 		if err := b.store.SaveGuildConfig(ctx, cfg); err != nil {
 			respondErr(s, i, t.FailedSave)
 			return
 		}
-		respondOK(s, i, fmt.Sprintf(t.VerifiedRoleSetFmt, roleID))
+		respondOK(s, i, fmt.Sprintf(t.VerifiedRoleSetFmt, cfg.DefaultRoleID))
 
-	case "view":
-		if cfg.DefaultRoleID == "" {
-			respondOK(s, i, t.VerifiedRoleNotSet)
+	case "view", "clear":
+		t := i18n.Get(b.getLocale(i))
+		cfg, ok, err := b.store.GetGuildConfig(ctx, i.GuildID)
+		if err != nil {
+			respondErr(s, i, t.FailedSave)
 			return
 		}
-		respondOK(s, i, fmt.Sprintf(t.VerifiedRoleViewFmt, cfg.DefaultRoleID))
-
-	case "clear":
+		if !ok {
+			respondErr(s, i, i18n.Get(i18n.LocaleEN).ErrMissingConfig)
+			return
+		}
+		if subcmd.Name == "view" {
+			if cfg.DefaultRoleID == "" {
+				respondOK(s, i, t.VerifiedRoleNotSet)
+				return
+			}
+			respondOK(s, i, fmt.Sprintf(t.VerifiedRoleViewFmt, cfg.DefaultRoleID))
+			return
+		}
 		cfg.DefaultRoleID = ""
 		if err := b.store.SaveGuildConfig(ctx, cfg); err != nil {
 			respondErr(s, i, t.FailedSave)
@@ -1219,7 +1313,11 @@ func respondErr(s *discordgo.Session, i *discordgo.InteractionCreate, msg string
 
 func (b *Bot) cmdBackup(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	t := i18n.Get(b.getLocale(i))
-	subcmd := i.ApplicationCommandData().Options[0]
+	subcmd, ok := getSubCommandOption(i.ApplicationCommandData().Options)
+	if !ok {
+		respondErr(s, i, "Missing subcommand.")
+		return
+	}
 	switch subcmd.Name {
 	case "create":
 		b.backupCreate(s, i, subcmd, t)
@@ -1238,20 +1336,12 @@ func (b *Bot) cmdBackup(s *discordgo.Session, i *discordgo.InteractionCreate) {
 
 func (b *Bot) backupCreate(s *discordgo.Session, i *discordgo.InteractionCreate, subcmd *discordgo.ApplicationCommandInteractionDataOption, t i18n.Translations) {
 	scope := backup.ScopeSingle
-	guildID := i.GuildID
-	for _, o := range subcmd.Options {
-		switch o.Name {
-		case "scope":
-			if o.StringValue() == "multi" {
-				scope = backup.ScopeMulti
-			}
-		case "guild-id":
-			guildID = o.StringValue()
-		}
+	if scopeValue, ok := getStringOption(subcmd.Options, "scope"); ok && scopeValue == "multi" {
+		scope = backup.ScopeMulti
 	}
-	if scope == backup.ScopeMulti && guildID == "" {
-		respondErr(s, i, t.BackupGuildID)
-		return
+	guildID := i.GuildID
+	if guildIDValue, ok := getStringOption(subcmd.Options, "guild-id"); ok && guildIDValue != "" {
+		guildID = guildIDValue
 	}
 
 	data, err := backup.CaptureGuild(s, guildID)
@@ -1296,18 +1386,14 @@ func (b *Bot) backupCreate(s *discordgo.Session, i *discordgo.InteractionCreate,
 }
 
 func (b *Bot) backupRestore(s *discordgo.Session, i *discordgo.InteractionCreate, subcmd *discordgo.ApplicationCommandInteractionDataOption, t i18n.Translations) {
-	var id int64
-	var targetGuildID string
-	for _, o := range subcmd.Options {
-		switch o.Name {
-		case "id":
-			id = o.IntValue()
-		case "guild-id":
-			targetGuildID = o.StringValue()
-		}
+	id, ok := getIntOption(subcmd.Options, "id")
+	if !ok {
+		respondErr(s, i, "Missing required argument.")
+		return
 	}
-	if targetGuildID == "" {
-		targetGuildID = i.GuildID
+	targetGuildID := i.GuildID
+	if guildID, ok := getStringOption(subcmd.Options, "guild-id"); ok && guildID != "" {
+		targetGuildID = guildID
 	}
 
 	rec, ok, err := b.store.GetBackup(context.Background(), int(id))
@@ -1332,10 +1418,8 @@ func (b *Bot) backupRestore(s *discordgo.Session, i *discordgo.InteractionCreate
 
 func (b *Bot) backupList(s *discordgo.Session, i *discordgo.InteractionCreate, subcmd *discordgo.ApplicationCommandInteractionDataOption, t i18n.Translations) {
 	kind := ""
-	for _, o := range subcmd.Options {
-		if o.Name == "type" {
-			kind = o.StringValue()
-		}
+	if kindValue, ok := getStringOption(subcmd.Options, "type"); ok && kindValue != "all" {
+		kind = kindValue
 	}
 	records, err := b.store.ListBackups(context.Background(), i.GuildID, kind)
 	if err != nil {
@@ -1355,37 +1439,37 @@ func (b *Bot) backupList(s *discordgo.Session, i *discordgo.InteractionCreate, s
 }
 
 func (b *Bot) backupSchedule(s *discordgo.Session, i *discordgo.InteractionCreate, subcmd *discordgo.ApplicationCommandInteractionDataOption, t i18n.Translations) {
-	var freq, timeOfDay string
-	for _, o := range subcmd.Options {
-		switch o.Name {
-		case "frequency":
-			freq = o.StringValue()
-		case "time":
-			timeOfDay = o.StringValue()
-		}
+	frequency, ok := getStringOption(subcmd.Options, "frequency")
+	if !ok {
+		respondErr(s, i, "Missing required argument.")
+		return
+	}
+	timeOfDay := "00:00"
+	if value, ok := getStringOption(subcmd.Options, "time"); ok && value != "" {
+		timeOfDay = value
 	}
 
 	cfg := store.ScheduledBackupConfig{
-		GuildID:    i.GuildID,
-		Enabled:    true,
-		Frequency:  freq,
-		TimeOfDay:  timeOfDay,
-		SlotCount:  3,
-		NextRun:    time.Now().Add(backup.FrequencyInterval(freq)),
+		GuildID:   i.GuildID,
+		Enabled:   true,
+		Frequency: frequency,
+		TimeOfDay: timeOfDay,
+		SlotCount: 3,
+		NextRun:   time.Now().Add(backup.FrequencyInterval(frequency)),
 	}
 	if err := b.store.SaveScheduledConfig(context.Background(), cfg); err != nil {
 		respondErr(s, i, t.BackupErrorSave)
 		return
 	}
 
-	respondOK(s, i, fmt.Sprintf(t.BackupScheduledFmt, freq))
+	respondOK(s, i, fmt.Sprintf(t.BackupScheduledFmt, frequency))
 }
 
 func (b *Bot) backupScheduleOff(s *discordgo.Session, i *discordgo.InteractionCreate, t i18n.Translations) {
 	cfg := store.ScheduledBackupConfig{
-		GuildID:    i.GuildID,
-		Enabled:    false,
-		SlotCount:  3,
+		GuildID:   i.GuildID,
+		Enabled:   false,
+		SlotCount: 3,
 	}
 	if err := b.store.SaveScheduledConfig(context.Background(), cfg); err != nil {
 		respondErr(s, i, t.BackupErrorSave)
@@ -1395,7 +1479,12 @@ func (b *Bot) backupScheduleOff(s *discordgo.Session, i *discordgo.InteractionCr
 }
 
 func (b *Bot) backupDelete(s *discordgo.Session, i *discordgo.InteractionCreate, subcmd *discordgo.ApplicationCommandInteractionDataOption, t i18n.Translations) {
-	id := int(subcmd.Options[0].IntValue())
+	idValue, ok := getIntOption(subcmd.Options, "id")
+	if !ok {
+		respondErr(s, i, "Missing required argument.")
+		return
+	}
+	id := int(idValue)
 	rec, ok, err := b.store.GetBackup(context.Background(), id)
 	if err != nil || !ok {
 		respondErr(s, i, t.BackupErrorDelete)
